@@ -27,8 +27,12 @@ var _ api.Battery = (*Provider)(nil)
 // SoC implements the api.Vehicle interface
 func (v *Provider) SoC() (float64, error) {
 	res, err := v.statusG()
-	if res, ok := res.(StatusResponse); err == nil && ok {
-		return float64(res.VehicleStatus.ChargingLevelHv), nil
+	if res, ok := res.(VehicleStatus); err == nil && ok {
+		if cs := res.Properties.ChargingState; cs != nil {
+			return float64(cs.ChargePercentage), nil
+		}
+
+		err = api.ErrNotAvailable
 	}
 
 	return 0, err
@@ -38,19 +42,25 @@ var _ api.ChargeState = (*Provider)(nil)
 
 // Status implements the api.ChargeState interface
 func (v *Provider) Status() (api.ChargeStatus, error) {
-	status := api.StatusA // disconnected
-
 	res, err := v.statusG()
-	if res, ok := res.(StatusResponse); err == nil && ok {
-		if res.VehicleStatus.ConnectionStatus == "CONNECTED" {
-			status = api.StatusB
+	if res, ok := res.(VehicleStatus); err == nil && ok {
+		if cs := res.Properties.ChargingState; cs != nil {
+			status := api.StatusA // disconnected
+
+			if cs.IsChargerConnected {
+				status = api.StatusB
+			}
+			if cs.State == "CHARGING" {
+				status = api.StatusC
+			}
+
+			return status, nil
 		}
-		if res.VehicleStatus.ChargingStatus == "CHARGING" {
-			status = api.StatusC
-		}
+
+		err = api.ErrNotAvailable
 	}
 
-	return status, err
+	return api.StatusNone, err
 }
 
 // var _ api.VehicleFinishTimer = (*Provider)(nil)
@@ -71,8 +81,12 @@ var _ api.VehicleRange = (*Provider)(nil)
 // Range implements the api.VehicleRange interface
 func (v *Provider) Range() (int64, error) {
 	res, err := v.statusG()
-	if res, ok := res.(StatusResponse); err == nil && ok {
-		return int64(res.VehicleStatus.RemainingRangeElectric), nil
+	if res, ok := res.(VehicleStatus); err == nil && ok {
+		if er := res.Properties.ElectricRange; er != nil {
+			return int64(er.Distance.Value), nil
+		}
+
+		err = api.ErrNotAvailable
 	}
 
 	return 0, err
@@ -83,8 +97,12 @@ var _ api.VehicleOdometer = (*Provider)(nil)
 // Odometer implements the api.VehicleOdometer interface
 func (v *Provider) Odometer() (float64, error) {
 	res, err := v.statusG()
-	if res, ok := res.(StatusResponse); err == nil && ok {
-		return float64(res.VehicleStatus.Mileage), nil
+	if res, ok := res.(VehicleStatus); err == nil && ok {
+		if cm := res.Status.CurrentMileage; cm != nil {
+			return float64(cm.Mileage), nil
+		}
+
+		err = api.ErrNotAvailable
 	}
 
 	return 0, err

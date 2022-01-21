@@ -1,0 +1,12 @@
+template: porsche
+description: 
+  generic: Porsche
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: capacity
+  default: 83.4
+render: |
+  type: porsche
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

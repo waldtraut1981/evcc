@@ -2,13 +2,12 @@ package vehicle
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
+	"github.com/evcc-io/evcc/vehicle/audi"
 	"github.com/evcc-io/evcc/vehicle/vw"
 )
 
@@ -46,19 +45,10 @@ func NewAudiFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 		embed: &cc.embed,
 	}
 
-	log := util.NewLogger("audi")
-	identity := vw.NewIdentity(log)
+	log := util.NewLogger("audi").Redact(cc.User, cc.Password, cc.VIN)
+	identity := vw.NewIdentity(log, audi.AuthClientID, audi.AuthParams, cc.User, cc.Password)
 
-	query := url.Values(map[string][]string{
-		"response_type": {"id_token token"},
-		"client_id":     {"09b6cbec-cd19-4589-82fd-363dfa8c24da@apps_vw-dilab_com"},
-		"redirect_uri":  {"myaudi:///"},
-		"scope":         {"openid profile mbb vin badge birthdate nickname email address phone name picture"},
-		"prompt":        {"login"},
-		"ui_locales":    {"de-DE"},
-	})
-
-	err := identity.LoginVAG("77869e21-e30a-4a92-b016-48ab7d3db1d8", query, cc.User, cc.Password)
+	err := identity.Login()
 	if err != nil {
 		return v, fmt.Errorf("login failed: %w", err)
 	}
@@ -66,27 +56,13 @@ func NewAudiFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	api := vw.NewAPI(log, identity, "Audi", "DE")
 	api.Client.Timeout = cc.Timeout
 
-	if cc.VIN == "" {
-		cc.VIN, err = findVehicle(api.Vehicles())
-		if err == nil {
-			log.DEBUG.Printf("found vehicle: %v", cc.VIN)
-		}
-	}
+	cc.VIN, err = ensureVehicle(cc.VIN, api.Vehicles)
 
 	if err == nil {
-		if err = api.HomeRegion(strings.ToUpper(cc.VIN)); err == nil {
-			v.Provider = vw.NewProvider(api, strings.ToUpper(cc.VIN), cc.Cache)
+		if err = api.HomeRegion(cc.VIN); err == nil {
+			v.Provider = vw.NewProvider(api, cc.VIN, cc.Cache)
 		}
 	}
-
-	// audiApi := audi.NewAPI(log, identity, "Audi", "DE")
-	// v.audiProvider = audi.NewProvider(audiApi, cc.VIN, cc.Cache)
 
 	return v, err
 }
-
-// var _ api.VehicleOdometer = (*Audi)(nil)
-
-// func (v *Audi) Odometer() (float64, error) {
-// 	return v.audiProvider.Odometer()
-// }

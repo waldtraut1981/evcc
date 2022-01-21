@@ -8,13 +8,11 @@ import (
 	"time"
 
 	"github.com/evcc-io/evcc/util"
+	"github.com/grid-x/modbus"
 	"github.com/volkszaehler/mbmd/meters"
 	"github.com/volkszaehler/mbmd/meters/rs485"
 	"github.com/volkszaehler/mbmd/meters/sunspec"
 )
-
-// WriteSingleRegister 16-bit wise write access
-const WriteSingleRegister = 6 // modbus.FuncCodeWriteSingleRegister
 
 type WireFormat int
 
@@ -22,6 +20,8 @@ const (
 	TcpFormat WireFormat = iota
 	RtuFormat
 	AsciiFormat
+
+	CoilOn uint16 = 0xFF00
 )
 
 // Settings contains the ModBus settings
@@ -57,6 +57,11 @@ func (mb *Connection) handle(res []byte, err error) ([]byte, error) {
 // Delay sets delay so use between subsequent modbus operations
 func (mb *Connection) Delay(delay time.Duration) {
 	mb.delay = delay
+}
+
+// ConnectDelay sets the initial delay after connecting before starting communication
+func (mb *Connection) ConnectDelay(delay time.Duration) {
+	mb.conn.ConnectDelay(delay)
 }
 
 // Logger sets logger implementation
@@ -243,6 +248,7 @@ type Register struct {
 	Address uint16 // Length  uint16
 	Type    string
 	Decode  string
+	BitMask string
 }
 
 // RegisterOperation creates a read operation from a register definition
@@ -254,11 +260,11 @@ func RegisterOperation(r Register) (rs485.Operation, error) {
 
 	switch strings.ToLower(r.Type) {
 	case "holding":
-		op.FuncCode = rs485.ReadHoldingReg
+		op.FuncCode = modbus.FuncCodeReadHoldingRegisters
 	case "input":
-		op.FuncCode = rs485.ReadInputReg
+		op.FuncCode = modbus.FuncCodeReadInputRegisters
 	case "writesingle":
-		op.FuncCode = WriteSingleRegister // modbus.FuncCodeWriteSingleRegister
+		op.FuncCode = modbus.FuncCodeWriteSingleRegister
 	default:
 		return rs485.Operation{}, fmt.Errorf("invalid register type: %s", r.Type)
 	}
@@ -288,6 +294,13 @@ func RegisterOperation(r Register) (rs485.Operation, error) {
 		op.Transform = rs485.RTUInt32ToFloat64
 	case "int32s":
 		op.Transform = rs485.RTUInt32ToFloat64Swapped
+	case "bool16":
+		mask, err := decodeMask(r.BitMask)
+		if err != nil {
+			return op, err
+		}
+		op.Transform = decodeBool16(mask)
+		op.ReadLen = 1
 	default:
 		return rs485.Operation{}, fmt.Errorf("invalid register decoding: %s", r.Decode)
 	}

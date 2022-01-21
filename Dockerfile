@@ -1,5 +1,5 @@
 # STEP 1 build ui
-FROM node:14-alpine as node
+FROM node:16-alpine as node
 
 RUN apk update && apk add --no-cache make
 
@@ -31,6 +31,7 @@ WORKDIR /build
 COPY Makefile .
 COPY go.mod .
 COPY go.sum .
+COPY tools.go .
 RUN make install
 RUN go mod download
 

@@ -1,56 +1,59 @@
 <template>
 	<div class="visualization" :class="{ 'visualization--ready': visualizationReady }">
 		<div class="label-scale">
-			<div class="d-flex justify-content-end">
-				<LabelBar v-bind="labelBarProps('top', 'batteryDischarge')">
-					<BatteryIcon :soc="batterySoC" discharge />
-				</LabelBar>
+			<div class="d-flex justify-content-start">
 				<LabelBar v-bind="labelBarProps('top', 'pvProduction')">
 					<fa-icon icon="sun"></fa-icon>
 				</LabelBar>
+				<LabelBar v-bind="labelBarProps('top', 'batteryDischarge')">
+					<BatteryIcon :soc="batterySoC" discharge />
+				</LabelBar>
+				<LabelBar v-bind="labelBarProps('top', 'gridImport')">
+					<GridIcon import />
+				</LabelBar>
 			</div>
 		</div>
-		<div class="site-progress" ref="site_progress">
-			<div
-				class="site-progress-bar grid-import"
-				:style="{ width: widthTotal(gridImportAdjusted) }"
-			>
-				<span class="power" v-if="powerLabelEnoughSpace(gridImport)">
-					{{ kw(gridImport) }}
-				</span>
-				<span class="power" v-else-if="powerLabelSomeSpace(gridImport)">
-					{{ kwNoUnit(gridImport) }}
-				</span>
-			</div>
+		<div ref="site_progress" class="site-progress">
 			<div
 				class="site-progress-bar self-consumption"
 				:style="{ width: widthTotal(selfConsumptionAdjusted) }"
 			>
-				<span class="power" v-if="powerLabelEnoughSpace(selfConsumption)">
+				<span v-if="powerLabelEnoughSpace(selfConsumption)" class="power">
 					{{ kw(selfConsumption) }}
 				</span>
-				<span class="power" v-else-if="powerLabelSomeSpace(selfConsumption)">
+				<span v-else-if="powerLabelSomeSpace(selfConsumption)" class="power">
 					{{ kwNoUnit(selfConsumption) }}
+				</span>
+			</div>
+			<div
+				class="site-progress-bar grid-import"
+				:style="{ width: widthTotal(gridImportAdjusted) }"
+			>
+				<span v-if="powerLabelEnoughSpace(gridImport)" class="power">
+					{{ kw(gridImport) }}
+				</span>
+				<span v-else-if="powerLabelSomeSpace(gridImport)" class="power">
+					{{ kwNoUnit(gridImport) }}
 				</span>
 			</div>
 			<div
 				class="site-progress-bar pv-export"
 				:style="{ width: widthTotal(pvExportAdjusted) }"
 			>
-				<span class="power" v-if="powerLabelEnoughSpace(pvExport)">
+				<span v-if="powerLabelEnoughSpace(pvExport)" class="power">
 					{{ kw(pvExport) }}
 				</span>
-				<span class="power" v-else-if="powerLabelSomeSpace(pvExport)">
+				<span v-else-if="powerLabelSomeSpace(pvExport)" class="power">
 					{{ kwNoUnit(pvExport) }}
 				</span>
 			</div>
-			<div class="site-progress-bar bg-light border no-wrap w-100" v-if="totalAdjusted <= 0">
+			<div v-if="totalAdjusted <= 0" class="site-progress-bar bg-light border no-wrap w-100">
 				<span>{{ $t("main.energyflow.noEnergy") }}</span>
 			</div>
 		</div>
 		<div class="label-scale">
 			<div class="d-flex justify-content-start">
-				<LabelBar v-bind="labelBarProps('bottom', 'houseConsumption')">
+				<LabelBar v-bind="labelBarProps('bottom', 'homePower')">
 					<fa-icon icon="home"></fa-icon>
 				</LabelBar>
 				<LabelBar v-bind="labelBarProps('bottom', 'loadpoints')">
@@ -58,6 +61,9 @@
 				</LabelBar>
 				<LabelBar v-bind="labelBarProps('bottom', 'batteryCharge')">
 					<BatteryIcon :soc="batterySoC" charge />
+				</LabelBar>
+				<LabelBar v-bind="labelBarProps('bottom', 'gridExport')">
+					<GridIcon export />
 				</LabelBar>
 			</div>
 		</div>
@@ -68,11 +74,13 @@
 import "../../icons";
 import formatter from "../../mixins/formatter";
 import BatteryIcon from "./BatteryIcon.vue";
+import GridIcon from "./GridIcon.vue";
 import LabelBar from "./LabelBar.vue";
 
 export default {
 	name: "Visualization",
-	components: { BatteryIcon, LabelBar },
+	components: { BatteryIcon, LabelBar, GridIcon },
+	mixins: [formatter],
 	props: {
 		showDetails: Boolean,
 		gridImport: { type: Number, default: 0 },
@@ -82,24 +90,17 @@ export default {
 		batteryCharge: { type: Number, default: 0 },
 		batteryDischarge: { type: Number, default: 0 },
 		pvProduction: { type: Number, default: 0 },
-		houseConsumption: { type: Number, default: 0 },
+		homePower: { type: Number, default: 0 },
 		batterySoC: { type: Number, default: 0 },
 		valuesInKw: { type: Boolean, default: false },
 	},
 	data: function () {
 		return { width: 0, visualizationReady: false };
 	},
-	mounted: function () {
-		this.$nextTick(function () {
-			window.addEventListener("resize", this.updateElementWidth);
-			this.updateElementWidth();
-		});
-	},
-	beforeDestroy() {
-		window.removeEventListener("resize", this.updateElementWidth);
-	},
-	mixins: [formatter],
 	computed: {
+		gridExport: function () {
+			return this.pvExport;
+		},
 		totalRaw: function () {
 			return this.gridImport + this.selfConsumption + this.pvExport;
 		},
@@ -126,6 +127,15 @@ export default {
 					this.visualizationReady = true;
 				}, 500);
 		},
+	},
+	mounted: function () {
+		this.$nextTick(function () {
+			window.addEventListener("resize", this.updateElementWidth);
+			this.updateElementWidth();
+		});
+	},
+	beforeDestroy() {
+		window.removeEventListener("resize", this.updateElementWidth);
 	},
 	methods: {
 		widthTotal: function (power) {
@@ -169,8 +179,8 @@ export default {
 		},
 		isLabel(position, name, last) {
 			const labels = {
-				top: ["batteryDischarge", "pvProduction"],
-				bottom: ["houseConsumption", "loadpoints", "batteryCharge"],
+				top: ["pvProduction", "batteryDischarge", "gridImport"],
+				bottom: ["homePower", "loadpoints", "batteryCharge", "gridExport"],
 			};
 			const entries = [...labels[position]];
 			if (last) {
@@ -186,7 +196,7 @@ export default {
 		},
 		labelBarProps(position, name) {
 			const value = this[name];
-			const minWidth = name.startsWith("battery") ? 44 : 32;
+			const minWidth = name.startsWith("battery") || name.startsWith("grid") ? 44 : 32;
 			return {
 				value,
 				hideIcon: this.hideLabelIcon(value, minWidth),

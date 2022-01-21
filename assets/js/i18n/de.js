@@ -1,9 +1,15 @@
 export default {
-  header: { support: "Support" },
+  header: {
+    docs: "Dokumentation",
+    blog: "Blog",
+    github: "GitHub",
+    login: "Anmeldungen",
+  },
   footer: {
     version: {
-      version: "Version",
-      availableShort: "verfügbar",
+      versionShort: "v{installed}",
+      versionLong: "Version {installed}",
+      availableShort: "Update",
       availableLong: "Update verfügbar",
       modalTitle: "Update verfügbar",
       modalUpdateStarted: "Nach der Aktualisierung wird evcc neu gestartet.",
@@ -17,21 +23,42 @@ export default {
       modalUpdateStatusStart: "Aktualisierung gestartet: ",
       modalUpdateStatusFailed: "Aktualisierung nicht möglich: ",
     },
+    savings: {
+      footerShort: "{percent}% Sonne",
+      footerLong: "{percent}% Sonnenenergie",
+      modalTitleShort: "{total} kWh geladen · {percent}% Sonne",
+      modalTitleLong: "{total} kWh geladen · {percent}% Sonnenenergie",
+      modalChartGrid: "Netz {grid} kWh",
+      modalChartSelf: "Sonne {self} kWh",
+      modalSavingsPrice: "Effektiver Energiepreis",
+      modalSavingsTotal: "Ersparnis gegenüber Netzbezug",
+      modalExplaination: "Berechnung",
+      modalExplainationGrid: "Netz {gridPrice}",
+      modalExplainationFeedIn: "Einspeisung {feedInPrice}",
+      modalServerStart: "Seit Serverstart {since}.",
+      modalNoData: "noch nicht geladen",
+      experimentalLabel: "experimentell",
+      experimentalText: "Unplausible Werte? Fragen zur Ansicht? Meld dich gerne in den",
+    },
     sponsor: {
-      sponsoredShort: "Danke",
-      sponsoredLong: "Danke {sponsor}",
-      supportProjectShort: "unterstützen",
-      supportProjectLong: "Projekt unterstützen",
+      thanks: "Danke für deine Unterstützung, {sponsor}! Das hilft uns bei der Weiterentwicklung.",
+      confetti: "Lust auf etwas Sponsor-Konfetti?",
+      supportUs:
+        "Wir möchten effizientes Zuhause-Laden zum Standard für möglichst viele Menschen machen. Helfe uns indem du die Weiterentwicklung und Pflege des Projekts unterstützt.",
+      sticker: "...oder evcc Sticker?",
+      confettiPromise: "Es gibt auch Sticker und digitales Konfetti ;)",
+      becomeSponsor: "Werde jetzt GitHub Sponsor",
     },
   },
   notifications: {
     modalTitle: "Meldungen",
     dismissAll: "Meldungen entfernen",
   },
+
   main: {
     energyflow: {
       noEnergy: "Kein Energiefluss",
-      houseConsumption: "Verbrauch",
+      homePower: "Verbrauch",
       pvProduction: "Erzeugung",
       loadpoints: "Ladepunkt | Ladepunkt | {count} Ladepunkte",
       battery: "Batterie",
@@ -58,7 +85,7 @@ export default {
     vehicle: {
       fallbackName: "Fahrzeug",
     },
-    vehicleSoc: {
+    vehicleSoC: {
       disconnected: "getrennt",
       charging: "lädt",
       ready: "bereit",
@@ -66,6 +93,10 @@ export default {
     },
     vehicleSubline: {
       mincharge: "Mindestladung bis {soc}%",
+    },
+    provider: {
+      login: "anmelden",
+      logout: "abmelden",
     },
     targetCharge: {
       inactiveLabel: "Zielzeit",
@@ -88,10 +119,23 @@ export default {
     },
     loadpointDetails: {
       power: "Leistung",
-      range: "Reichweite",
+      vehicleRange: "Reichweite",
       charged: "Geladen",
       duration: "Dauer",
       remaining: "Restzeit",
+      tooltip: {
+        phases: {
+          scale1p: "Herunterschalten auf einphasig in {remaining}.",
+          scale3p: "Hochschalten auf dreiphasig in {remaining}.",
+          charge1p: "Lädt einphasig.",
+          charge2p: "Lädt zweiphasig.",
+          charge3p: "Lädt dreiphasig.",
+        },
+        pv: {
+          enable: "Überschuss verfügbar. Ladung startet in {remaining}.",
+          disable: "Zu wenig Überschuss. Ladung pausiert in {remaining}.",
+        },
+      },
     },
   },
 };

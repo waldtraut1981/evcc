@@ -36,11 +36,11 @@ type API interface {
 	// GetTargetSoC returns the charge target soc
 	GetTargetSoC() int
 	// SetTargetSoC sets the charge target soc
-	SetTargetSoC(int) error
+	SetTargetSoC(int)
 	// GetMinSoC returns the charge minimum soc
 	GetMinSoC() int
 	// SetMinSoC sets the charge minimum soc
-	SetMinSoC(int) error
+	SetMinSoC(int)
 	// GetPhases returns the enabled phases
 	GetPhases() int
 	// SetPhases sets the enabled phases
@@ -59,11 +59,11 @@ type API interface {
 	GetChargePower() float64
 	// GetMinCurrent returns the min charging current
 	GetMinCurrent() float64
-	// SetMinCurrent returns the min charging current
+	// SetMinCurrent sets the min charging current
 	SetMinCurrent(float64)
 	// GetMaxCurrent returns the max charging current
 	GetMaxCurrent() float64
-	// SetMaxCurrent returns the max charging current
+	// SetMaxCurrent sets the max charging current
 	SetMaxCurrent(float64)
 	// GetMinPower returns the min charging power for a single phase
 	GetMinPower() float64

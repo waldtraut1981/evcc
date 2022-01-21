@@ -1,9 +1,14 @@
 export default {
-  header: { support: "Support" },
+  header: {
+    docs: "Documentazione",
+    blog: "Blog",
+    github: "GitHub",
+    login: "Iscrizioni",
+  },
   footer: {
     version: {
       version: "versione",
-      availableShort: "disponibile",
+      availableShort: "aggiornamento",
       availableLong: "aggiornamento disponibile",
       modalTitle: "Aggiornamento disponibile",
       modalUpdateStarted: "Evcc ripartirà dopo l'aggiornamento..",
@@ -31,7 +36,7 @@ export default {
   main: {
     energyflow: {
       noEnergy: "No Energyflow",
-      houseConsumption: "Consumption",
+      homePower: "Consumption",
       pvProduction: "Produzione",
       battery: "Batteria",
       batteryCharge: "Battery charge",
@@ -57,7 +62,7 @@ export default {
     vehicle: {
       fallbackName: "Veicolo",
     },
-    vehicleSoc: {
+    vehicleSoC: {
       disconnected: "disconesso",
       charging: "carica",
       ready: "pronto",
@@ -66,9 +71,13 @@ export default {
     vehicleSubline: {
       mincharge: "carica minima fino a {soc}%",
     },
+    provider: {
+      login: "accedere",
+      logout: "disconnettersi",
+    },
     loadpointDetails: {
       power: "Potenza",
-      range: "Autonomia",
+      vehicleRange: "Autonomia",
       charged: "Ricaricato",
       duration: "Duarata",
       remaining: "Rimanenti",

@@ -12,6 +12,7 @@ import (
 	"github.com/evcc-io/evcc/meter/powerwall"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
+	"github.com/evcc-io/evcc/util/transport"
 )
 
 // credits to https://github.com/vloschiavo/powerwall2
@@ -26,7 +27,7 @@ func init() {
 	registry.Add("tesla", NewTeslaFromConfig)
 }
 
-//go:generate go run ../cmd/tools/decorate.go -f decorateTesla -b api.Meter -t "api.MeterEnergy,TotalEnergy,func() (float64, error)" -t "api.Battery,SoC,func() (float64, error)"
+//go:generate go run ../cmd/tools/decorate.go -f decorateTesla -b *Tesla -r api.Meter -t "api.MeterEnergy,TotalEnergy,func() (float64, error)" -t "api.Battery,SoC,func() (float64, error)"
 
 // NewTeslaFromConfig creates a Tesla Powerwall Meter from generic config
 func NewTeslaFromConfig(other map[string]interface{}) (api.Meter, error) {
@@ -64,7 +65,7 @@ func NewTeslaFromConfig(other map[string]interface{}) (api.Meter, error) {
 
 // NewTesla creates a Tesla Meter
 func NewTesla(uri, usage, password string) (api.Meter, error) {
-	log := util.NewLogger("tesla")
+	log := util.NewLogger("tesla").Redact(password)
 
 	m := &Tesla{
 		Helper:   request.NewHelper(log),
@@ -74,7 +75,7 @@ func NewTesla(uri, usage, password string) (api.Meter, error) {
 	}
 
 	// ignore the self signed certificate
-	m.Client.Transport = request.NewTripper(log, request.InsecureTransport())
+	m.Client.Transport = request.NewTripper(log, transport.Insecure())
 	// create cookie jar to save login tokens
 	m.Client.Jar, _ = cookiejar.New(nil)
 
@@ -114,6 +115,8 @@ func (m *Tesla) Login() error {
 
 	return err
 }
+
+var _ api.Meter = (*Tesla)(nil)
 
 // CurrentPower implements the api.Meter interface
 func (m *Tesla) CurrentPower() (float64, error) {

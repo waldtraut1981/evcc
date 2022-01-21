@@ -29,27 +29,23 @@ import (
 
 // ABLeMH charger implementation
 type ABLeMH struct {
-	log  *util.Logger
 	conn *modbus.Connection
+	curr uint16
 }
 
 const (
 	ablRegFirmware   = 0x01
 	ablRegStatus     = 0x04
-	ablRegMode       = 0x05
+	ablRegEnabled    = 0x0F
 	ablRegAmpsConfig = 0x14
 	ablRegStatusLong = 0x2E
 
-	ablStatusDisabled = 0xE0
-
-	ablAmpsDisabled uint16 = 0x03E8
-	ablModeEnable   uint16 = 0xA1A1
-	ablModeDisable  uint16 = 0xE0E0
+	ablAmpsDisabled  uint16 = 0x03E8
+	ablSensorPresent        = 1 << 5
 )
 
-const ablStatusOutletDisabled = 0xE0
-
 var ablStatus = map[byte]string{
+	0xA1: "Waiting for EV",
 	0xB1: "EV is asking for charging",
 	0xB2: "EV has the permission to charge",
 	0xC2: "EV is charged",
@@ -91,6 +87,8 @@ func NewABLeMHFromConfig(other map[string]interface{}) (api.Charger, error) {
 	return NewABLeMH(cc.URI, cc.Device, cc.Comset, cc.Baudrate, cc.ID)
 }
 
+//go:generate go run ../cmd/tools/decorate.go -f decorateABLeMH -b *ABLeMH -r api.Charger -t "api.Meter,CurrentPower,func() (float64, error)" -t "api.MeterCurrent,Currents,func() (float64, float64, float64, error)"
+
 // NewABLeMH creates ABLeMH charger
 func NewABLeMH(uri, device, comset string, baudrate int, slaveID uint8) (api.Charger, error) {
 	conn, err := modbus.NewConnection(uri, device, comset, baudrate, modbus.AsciiFormat, slaveID)
@@ -106,11 +104,19 @@ func NewABLeMH(uri, device, comset string, baudrate int, slaveID uint8) (api.Cha
 	conn.Logger(log.TRACE)
 
 	wb := &ABLeMH{
-		log:  log,
 		conn: conn,
+		curr: uint16(6 / 0.06),
 	}
 
-	return wb, nil
+	_, _ = wb.conn.ReadHoldingRegisters(ablRegFirmware, 2)
+	b, err := wb.conn.ReadHoldingRegisters(ablRegFirmware, 2)
+
+	// check presence of current sensor
+	if err == nil && (b[3]&ablSensorPresent != 0) {
+		return decorateABLeMH(wb, wb.currentPower, wb.currents), nil
+	}
+
+	return wb, err
 }
 
 // Status implements the api.Charger interface
@@ -127,11 +133,6 @@ func (wb *ABLeMH) Status() (api.ChargeStatus, error) {
 	case 'A', 'B', 'C':
 		return api.ChargeStatus(r), nil
 	default:
-		// treat outlet disabled as vehicle disconnected
-		if b[1] == ablStatusOutletDisabled {
-			return api.StatusA, nil
-		}
-
 		status, ok := ablStatus[b[1]]
 		if !ok {
 			status = string(r)
@@ -143,29 +144,28 @@ func (wb *ABLeMH) Status() (api.ChargeStatus, error) {
 
 // Enabled implements the api.Charger interface
 func (wb *ABLeMH) Enabled() (bool, error) {
-	_, _ = wb.conn.ReadHoldingRegisters(ablRegStatus, 1)
-	b, err := wb.conn.ReadHoldingRegisters(ablRegStatus, 1)
+	_, _ = wb.conn.ReadHoldingRegisters(ablRegEnabled, 5)
+	b, err := wb.conn.ReadHoldingRegisters(ablRegEnabled, 5)
 	if err != nil {
 		return false, err
 	}
 
-	enabled := b[1] != ablStatusDisabled
-
-	return enabled, nil
+	u := binary.BigEndian.Uint16(b[6:]) & 0x0FFF
+	return u != ablAmpsDisabled, nil
 }
 
 // Enable implements the api.Charger interface
 func (wb *ABLeMH) Enable(enable bool) error {
-	u := ablModeDisable
+	u := ablAmpsDisabled
 	if enable {
-		u = ablModeEnable
+		u = wb.curr
 	}
 
 	b := make([]byte, 2)
 	binary.BigEndian.PutUint16(b, u)
 
-	_, _ = wb.conn.WriteMultipleRegisters(ablRegMode, 1, b)
-	_, err := wb.conn.WriteMultipleRegisters(ablRegMode, 1, b)
+	_, _ = wb.conn.WriteMultipleRegisters(ablRegAmpsConfig, 1, b)
+	_, err := wb.conn.WriteMultipleRegisters(ablRegAmpsConfig, 1, b)
 
 	return err
 }
@@ -180,10 +180,10 @@ var _ api.ChargerEx = (*ABLeMH)(nil)
 // MaxCurrent implements the api.ChargerEx interface
 func (wb *ABLeMH) MaxCurrentMillis(current float64) error {
 	// calculate duty cycle according to https://www.goingelectric.de/forum/viewtopic.php?p=1575287#p1575287
-	u := uint16(current / 0.06)
+	wb.curr = uint16(current / 0.06)
 
 	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, u)
+	binary.BigEndian.PutUint16(b, wb.curr)
 
 	_, _ = wb.conn.WriteMultipleRegisters(ablRegAmpsConfig, 1, b)
 	_, err := wb.conn.WriteMultipleRegisters(ablRegAmpsConfig, 1, b)
@@ -191,18 +191,14 @@ func (wb *ABLeMH) MaxCurrentMillis(current float64) error {
 	return err
 }
 
-var _ api.Meter = (*ABLeMH)(nil)
-
-// CurrentPower implements the api.Meter interface
-func (wb *ABLeMH) CurrentPower() (float64, error) {
-	l1, l2, l3, err := wb.Currents()
+// currentPower implements the api.Meter interface
+func (wb *ABLeMH) currentPower() (float64, error) {
+	l1, l2, l3, err := wb.currents()
 	return 230 * (l1 + l2 + l3), err
 }
 
-var _ api.MeterCurrent = (*ABLeMH)(nil)
-
 // Currents implements the api.MeterCurrent interface
-func (wb *ABLeMH) Currents() (float64, float64, float64, error) {
+func (wb *ABLeMH) currents() (float64, float64, float64, error) {
 	_, _ = wb.conn.ReadHoldingRegisters(ablRegStatusLong, 5)
 	b, err := wb.conn.ReadHoldingRegisters(ablRegStatusLong, 5)
 	if err != nil {

@@ -2,25 +2,24 @@ package meter
 
 import (
 	"fmt"
-	"net/http"
+	"time"
 
 	"github.com/evcc-io/evcc/api"
+	"github.com/evcc-io/evcc/meter/discovergy"
 	"github.com/evcc-io/evcc/provider"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
+	"github.com/evcc-io/evcc/util/transport"
 	"github.com/thoas/go-funk"
 )
-
-const discovergyAPI = "https://api.discovergy.com/public/v1"
 
 func init() {
 	registry.Add("discovergy", NewDiscovergyFromConfig)
 }
 
-type discovergyMeter struct {
-	MeterID          string `json:"meterId"`
-	SerialNumber     string `json:"serialNumber"`
-	FullSerialNumber string `json:"fullSerialNumber"`
+type Discovergy struct {
+	dataG func() (interface{}, error)
+	scale float64
 }
 
 // NewDiscovergyFromConfig creates a new configurable meter
@@ -30,32 +29,24 @@ func NewDiscovergyFromConfig(other map[string]interface{}) (api.Meter, error) {
 		Password string
 		Meter    string
 		Scale    float64
+		Cache    time.Duration
 	}{
 		Scale: 1,
+		Cache: time.Second,
 	}
 
 	if err := util.DecodeOther(other, &cc); err != nil {
 		return nil, err
 	}
 
-	log := util.NewLogger("discgy")
+	basicAuth := transport.BasicAuthHeader(cc.User, cc.Password)
+	log := util.NewLogger("discgy").Redact(cc.User, cc.Password, cc.Meter, basicAuth)
 
-	headers := make(map[string]string)
-	if err := provider.AuthHeaders(log, provider.Auth{
-		Type:     "Basic",
-		User:     cc.User,
-		Password: cc.Password,
-	}, headers); err != nil {
-		return nil, err
-	}
+	client := request.NewHelper(log)
+	client.Transport = transport.BasicAuth(cc.User, cc.Password, client.Transport)
 
-	req, err := request.New(http.MethodGet, fmt.Sprintf("%s/meters", discovergyAPI), nil, headers)
-	if err != nil {
-		return nil, err
-	}
-
-	var meters []discovergyMeter
-	if err := request.NewHelper(log).DoJSON(req, &meters); err != nil {
+	var meters []discovergy.Meter
+	if err := client.GetJSON(fmt.Sprintf("%s/meters", discovergy.API), &meters); err != nil {
 		return nil, err
 	}
 
@@ -72,20 +63,46 @@ func NewDiscovergyFromConfig(other map[string]interface{}) (api.Meter, error) {
 	}
 
 	if meterID == "" {
-		return nil, fmt.Errorf("could not determine meter id: %v", funk.Map(meters, func(m discovergyMeter) string {
+		return nil, fmt.Errorf("could not determine meter id: %v", funk.Map(meters, func(m discovergy.Meter) string {
 			return m.FullSerialNumber
 		}))
 	}
 
-	uri := fmt.Sprintf("%s/last_reading?meterId=%s", discovergyAPI, meterID)
-	power, err := provider.NewHTTP(log, http.MethodGet, uri, headers, "", false, "", ".values.power", 0.001*cc.Scale)
-	if err != nil {
-		return nil, err
+	dataG := provider.NewCached(func() (interface{}, error) {
+		uri := fmt.Sprintf("%s/last_reading?meterId=%s", discovergy.API, meterID)
+		var res discovergy.Reading
+		err := client.GetJSON(uri, &res)
+		return res, err
+	}, cc.Cache).InterfaceGetter()
+
+	m := &Discovergy{
+		dataG: dataG,
+		scale: cc.Scale,
 	}
 
-	return NewConfigurable(power.FloatGetter())
+	return m, nil
 }
 
-func matchesIdentifier(id string, m discovergyMeter) bool {
+func matchesIdentifier(id string, m discovergy.Meter) bool {
 	return id == m.MeterID || id == m.SerialNumber || id == m.FullSerialNumber
+}
+
+var _ api.Meter = (*Discovergy)(nil)
+
+func (m *Discovergy) CurrentPower() (float64, error) {
+	res, err := m.dataG()
+	if res, ok := res.(discovergy.Reading); err == nil && ok {
+		return m.scale * float64(res.Values.Power) / 1e3, nil
+	}
+	return 0, err
+}
+
+var _ api.MeterEnergy = (*Discovergy)(nil)
+
+func (m *Discovergy) TotalEnergy() (float64, error) {
+	res, err := m.dataG()
+	if res, ok := res.(discovergy.Reading); err == nil && ok {
+		return float64(res.Values.Energy) / 1e6, nil
+	}
+	return 0, err
 }

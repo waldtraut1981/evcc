@@ -2,8 +2,6 @@ package vehicle
 
 import (
 	"fmt"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
@@ -45,34 +43,22 @@ func NewVWFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 		embed: &cc.embed,
 	}
 
-	log := util.NewLogger("vw")
-	identity := vw.NewIdentity(log)
+	log := util.NewLogger("vw").Redact(cc.User, cc.Password, cc.VIN)
 
-	query := url.Values(map[string][]string{
-		"response_type": {"id_token token"},
-		"client_id":     {"9496332b-ea03-4091-a224-8c746b885068@apps_vw-dilab_com"},
-		"redirect_uri":  {"carnet://identity-kit/login"},
-		"scope":         {"openid profile mbb cars birthdate nickname address phone"},
-	})
-
-	err := identity.LoginVAG("38761134-34d0-41f3-9a73-c4be88d7d337", query, cc.User, cc.Password)
+	identity := vw.NewIdentity(log, vw.AuthClientID, vw.AuthParams, cc.User, cc.Password)
+	err := identity.Login()
 	if err != nil {
 		return v, fmt.Errorf("login failed: %w", err)
 	}
 
-	api := vw.NewAPI(log, identity, "VW", "DE")
+	api := vw.NewAPI(log, identity, vw.Brand, vw.Country)
 	api.Client.Timeout = cc.Timeout
 
-	if cc.VIN == "" {
-		cc.VIN, err = findVehicle(api.Vehicles())
-		if err == nil {
-			log.DEBUG.Printf("found vehicle: %v", cc.VIN)
-		}
-	}
+	cc.VIN, err = ensureVehicle(cc.VIN, api.Vehicles)
 
 	if err == nil {
-		if err = api.HomeRegion(strings.ToUpper(cc.VIN)); err == nil {
-			v.Provider = vw.NewProvider(api, strings.ToUpper(cc.VIN), cc.Cache)
+		if err = api.HomeRegion(cc.VIN); err == nil {
+			v.Provider = vw.NewProvider(api, cc.VIN, cc.Cache)
 		}
 	}
 

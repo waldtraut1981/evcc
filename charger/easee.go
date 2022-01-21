@@ -18,8 +18,13 @@ package charger
 // SOFTWARE.
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
@@ -27,6 +32,7 @@ import (
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
 	"github.com/evcc-io/evcc/util/sponsor"
+	"github.com/philippseith/signalr"
 	"github.com/thoas/go-funk"
 	"golang.org/x/oauth2"
 )
@@ -34,14 +40,19 @@ import (
 // Easee charger implementation
 type Easee struct {
 	*request.Helper
-	charger       string
-	site, circuit int
-	status        easee.ChargerStatus
-	updated       time.Time
-	cache         time.Duration
-	log           *util.Logger
-	phases        int
-	current       float64
+	charger               string
+	site, circuit         int
+	updated               time.Time
+	chargeStatus          api.ChargeStatus
+	log                   *util.Logger
+	mux                   *sync.Cond
+	dynamicChargerCurrent float64
+	current               float64
+	chargerEnabled        bool
+	enabledStatus         bool
+	phaseMode             int
+	currentPower, sessionEnergy,
+	currentL1, currentL2, currentL3 float64
 }
 
 func init() {
@@ -54,22 +65,30 @@ func NewEaseeFromConfig(other map[string]interface{}) (api.Charger, error) {
 		User     string
 		Password string
 		Charger  string
-		Circuit  int
-		Cache    time.Duration
-	}{
-		Cache: 10 * time.Second,
-	}
+		Circuit  int           // deprecated
+		Cache    time.Duration // deprecated
+	}{}
 
 	if err := util.DecodeOther(other, &cc); err != nil {
 		return nil, err
 	}
 
-	return NewEasee(cc.User, cc.Password, cc.Charger, cc.Circuit, cc.Cache)
+	log := util.NewLogger("easee")
+
+	if cc.Circuit > 0 {
+		log.WARN.Println("circuit is deprecated and will be removed in a future release")
+	}
+
+	if cc.Cache > 0 {
+		log.WARN.Println("cache is deprecated and will be removed in a future release")
+	}
+
+	return NewEasee(cc.User, cc.Password, cc.Charger, cc.Cache)
 }
 
 // NewEasee creates Easee charger
-func NewEasee(user, password, charger string, circuit int, cache time.Duration) (*Easee, error) {
-	log := util.NewLogger("easee")
+func NewEasee(user, password, charger string, cache time.Duration) (*Easee, error) {
+	log := util.NewLogger("easee").Redact(user, password)
 
 	if !sponsor.IsAuthorized() {
 		return nil, api.ErrSponsorRequired
@@ -78,10 +97,9 @@ func NewEasee(user, password, charger string, circuit int, cache time.Duration) 
 	c := &Easee{
 		Helper:  request.NewHelper(log),
 		charger: charger,
-		circuit: circuit,
-		cache:   cache,
 		log:     log,
-		phases:  3,
+		mux:     sync.NewCond(new(sync.Mutex)),
+		current: 6, // default current
 	}
 
 	ts, err := easee.TokenSource(log, user, password)
@@ -110,171 +128,278 @@ func NewEasee(user, password, charger string, circuit int, cache time.Duration) 
 	}
 
 	// find site
-	site, err := c.chargerDetails(c.charger)
+	site, err := c.chargerSite(c.charger)
 	if err != nil {
-		return c, err
+		return nil, err
 	}
 
-	c.site = site.ID
-
-	// find circuit
-	if circuit == 0 {
-		if len(site.Circuits) != 1 {
-			return c, fmt.Errorf("cannot determine circuit id, found: %v", funk.Map(site.Circuits, func(c easee.Circuit) int { return c.ID }))
+	// find single charger per circuit
+	for _, circuit := range site.Circuits {
+		if len(circuit.Chargers) > 1 {
+			continue
 		}
 
-		c.circuit = site.Circuits[0].ID
+		for _, charger := range circuit.Chargers {
+			if charger.ID == c.charger {
+				c.site = site.ID
+				c.circuit = circuit.ID
+				break
+			}
+		}
 	}
 
-	// verify charger config
-	config, err := c.chargerConfig(c.charger)
-	if err == nil && config.PhaseMode != 2 {
-		c.log.WARN.Println("expected PhaseMode auto- switching phases will NOT work")
+	client, err := signalr.NewClient(context.Background(),
+		signalr.WithConnector(c.connect(ts)),
+		signalr.WithReceiver(c),
+		signalr.Logger(easee.SignalrLogger(c.log.TRACE), false),
+	)
+
+	if err == nil {
+		c.subscribe(client)
+
+		client.Start()
+
+		ctx, cancel := context.WithTimeout(context.Background(), request.Timeout)
+		defer cancel()
+		err = <-client.WaitForState(ctx, signalr.ClientConnected)
+	}
+
+	// wait for first update
+	done := make(chan struct{})
+	go c.waitForInitialUpdate(done)
+
+	select {
+	case <-done:
+	case <-time.After(request.Timeout):
+		err = api.ErrTimeout
 	}
 
 	return c, err
 }
 
-func (c *Easee) chargers() (res []easee.Charger, err error) {
-	uri := fmt.Sprintf("%s/chargers", easee.API)
-
-	req, err := request.New(http.MethodGet, uri, nil, request.JSONEncoding)
-	if err == nil {
-		err = c.DoJSON(req, &res)
-	}
-
-	return res, err
-}
-
-func (c *Easee) chargerConfig(charger string) (res easee.ChargerConfig, err error) {
-	uri := fmt.Sprintf("%s/chargers/%s/config", easee.API, charger)
-
-	req, err := request.New(http.MethodGet, uri, nil, request.JSONEncoding)
-	if err == nil {
-		err = c.DoJSON(req, &res)
-	}
-
-	return res, err
-}
-
-func (c *Easee) chargerDetails(charger string) (res easee.Site, err error) {
+func (c *Easee) chargerSite(charger string) (easee.Site, error) {
+	var res easee.Site
 	uri := fmt.Sprintf("%s/chargers/%s/site", easee.API, charger)
-
-	req, err := request.New(http.MethodGet, uri, nil, request.JSONEncoding)
-	if err == nil {
-		err = c.DoJSON(req, &res)
-	}
-
+	err := c.GetJSON(uri, &res)
 	return res, err
 }
 
-func (c *Easee) state() (easee.ChargerStatus, error) {
-	if time.Since(c.updated) < c.cache {
-		return c.status, nil
+// connect creates an HTTP connection to the signalR hub
+func (c *Easee) connect(ts oauth2.TokenSource) func() (signalr.Connection, error) {
+	return func() (signalr.Connection, error) {
+		tok, err := ts.Token()
+		if err != nil {
+			return nil, err
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), request.Timeout)
+		defer cancel()
+
+		return signalr.NewHTTPConnection(ctx, "https://api.easee.cloud/hubs/chargers",
+			signalr.WithHTTPClient(c.Client),
+			signalr.WithHTTPHeaders(func() (res http.Header) {
+				return http.Header{
+					"Authorization": []string{fmt.Sprintf("Bearer %s", tok.AccessToken)},
+				}
+			}),
+		)
+	}
+}
+
+// subscribe listen to state changes and sends subscription requests when connection is established
+func (c *Easee) subscribe(client signalr.Client) {
+	stateC := make(chan signalr.ClientState, 1)
+	_ = client.ObserveStateChanged(stateC)
+
+	go func() {
+		for state := range stateC {
+			if state == signalr.ClientConnected {
+				if err := <-client.Send("SubscribeWithCurrentState", c.charger, true); err != nil {
+					c.log.ERROR.Printf("SubscribeWithCurrentState: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// waitForInitialUpdate waits for observe to trigger the the timestamp updated condition
+func (c *Easee) waitForInitialUpdate(done chan struct{}) {
+	c.mux.L.Lock()
+	c.mux.Wait()
+	for c.updated.IsZero() {
+		c.mux.Wait()
+	}
+	c.mux.L.Unlock()
+	close(done)
+}
+
+// observe handles the subscription messages
+func (c *Easee) observe(typ string, i json.RawMessage) {
+	var res easee.Observation
+	err := json.Unmarshal(i, &res)
+	if err != nil {
+		c.log.ERROR.Printf("invalid message: %s %s %v", i, typ, err)
+		return
 	}
 
-	uri := fmt.Sprintf("%s/chargers/%s/state", easee.API, c.charger)
-	req, err := request.New(http.MethodGet, uri, nil, request.JSONEncoding)
-	if err == nil {
-		if err = c.DoJSON(req, &c.status); err == nil {
-			c.updated = time.Now()
+	var value interface{}
+
+	switch res.DataType {
+	case easee.Boolean:
+		value = res.Value == "1"
+	case easee.Double:
+		value, err = strconv.ParseFloat(res.Value, 64)
+		if err != nil {
+			c.log.ERROR.Println(err)
+			return
+		}
+	case easee.Integer:
+		value, err = strconv.Atoi(res.Value)
+		if err != nil {
+			c.log.ERROR.Println(err)
+			return
 		}
 	}
 
-	return c.status, err
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
+
+	if c.updated.IsZero() {
+		go func() {
+			<-time.After(3 * time.Second)
+			c.mux.Broadcast()
+		}()
+	}
+	c.updated = time.Now()
+
+	switch res.ID {
+	case easee.IS_ENABLED:
+		c.chargerEnabled = value.(bool)
+	case easee.TOTAL_POWER:
+		c.currentPower = 1e3 * value.(float64)
+	case easee.SESSION_ENERGY:
+		c.sessionEnergy = value.(float64)
+	case easee.IN_CURRENT_T3:
+		c.currentL1 = value.(float64)
+	case easee.IN_CURRENT_T4:
+		c.currentL2 = value.(float64)
+	case easee.IN_CURRENT_T5:
+		c.currentL3 = value.(float64)
+	case easee.PHASE_MODE:
+		c.phaseMode = value.(int)
+	case easee.DYNAMIC_CHARGER_CURRENT:
+		c.dynamicChargerCurrent = value.(float64)
+		// ensure that charger current matches evcc's expectation
+		if c.dynamicChargerCurrent > 0 && c.dynamicChargerCurrent != c.current {
+			if err = c.MaxCurrent(int64(c.current)); err != nil {
+				c.log.ERROR.Println(err)
+			}
+		}
+	case easee.CHARGER_OP_MODE:
+		switch value.(int) {
+		case easee.ModeDisconnected:
+			c.chargeStatus = api.StatusA
+		case easee.ModeAwaitingStart, easee.ModeCompleted, easee.ModeReadyToCharge:
+			c.chargeStatus = api.StatusB
+		case easee.ModeCharging:
+			c.chargeStatus = api.StatusC
+		case easee.ModeError:
+			c.chargeStatus = api.StatusF
+		default:
+			c.chargeStatus = api.StatusNone
+			c.log.ERROR.Printf("unknown opmode: %d", value.(int))
+		}
+		c.enabledStatus = value.(int) == easee.ModeCharging ||
+			value.(int) == easee.ModeAwaitingStart ||
+			value.(int) == easee.ModeCompleted ||
+			value.(int) == easee.ModeReadyToCharge
+	}
+
+	c.log.TRACE.Printf("%s %s: %s %.4v", typ, res.Mid, res.ID, value)
+}
+
+// ProductUpdate implements the signalr receiver
+func (c *Easee) ProductUpdate(i json.RawMessage) {
+	c.observe("ProductUpdate", i)
+}
+
+// ChargerUpdate implements the signalr receiver
+func (c *Easee) ChargerUpdate(i json.RawMessage) {
+	// c.observe("ChargerUpdate", i)
+}
+
+// CommandResponse implements the signalr receiver
+func (c *Easee) CommandResponse(i json.RawMessage) {
+	// c.observe("CommandResponse", i)
+}
+
+func (c *Easee) chargers() ([]easee.Charger, error) {
+	var res []easee.Charger
+	uri := fmt.Sprintf("%s/chargers", easee.API)
+	err := c.GetJSON(uri, &res)
+	return res, err
 }
 
 // Status implements the api.Charger interface
 func (c *Easee) Status() (api.ChargeStatus, error) {
-	res, err := c.state()
-	if err != nil {
-		return api.StatusNone, err
-	}
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
 
-	switch res.ChargerOpMode {
-	case easee.ModeDisconnected:
-		return api.StatusA, nil
-	case easee.ModeAwaitingStart, easee.ModeCompleted, easee.ModeReadyToCharge:
-		return api.StatusB, nil
-	case easee.ModeCharging:
-		return api.StatusC, nil
-	case easee.ModeError:
-		return api.StatusF, nil
-	default:
-		return api.StatusNone, fmt.Errorf("unknown opmode: %d", res.ChargerOpMode)
-	}
+	return c.chargeStatus, nil
 }
 
 // Enabled implements the api.Charger interface
 func (c *Easee) Enabled() (bool, error) {
-	res, err := c.state()
-	return res.ChargerOpMode == easee.ModeCharging || res.ChargerOpMode == easee.ModeReadyToCharge, err
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
+
+	return c.enabledStatus && c.dynamicChargerCurrent > 0, nil
 }
 
 // Enable implements the api.Charger interface
 func (c *Easee) Enable(enable bool) error {
-	res, err := c.state()
-	if err != nil {
-		return err
-	}
+	c.mux.L.Lock()
+	enablingRequired := enable && !c.chargerEnabled
+	c.mux.L.Unlock()
 
-	// enable charger once
-	if enable && !res.IsOnline {
+	// enable charger once if it's switched off
+	if enablingRequired {
 		data := easee.ChargerSettings{
 			Enabled: &enable,
 		}
 
 		uri := fmt.Sprintf("%s/chargers/%s/settings", easee.API, c.charger)
 		resp, err := c.Post(uri, request.JSONContent, request.MarshalJSON(data))
-		if err == nil {
-			resp.Body.Close()
+		if err != nil {
+			return err
 		}
-
-		c.updated = time.Time{} // clear cache
-
-		return err
+		resp.Body.Close()
 	}
 
 	// resume/stop charger
-	action := "pause_charging"
+	action := easee.ChargePause
 	if enable {
-		action = "resume_charging"
+		action = easee.ChargeResume
 	}
 
 	uri := fmt.Sprintf("%s/chargers/%s/commands/%s", easee.API, c.charger, action)
-	_, err = c.Post(uri, request.JSONContent, nil)
-	c.updated = time.Time{} // clear cache
+	_, err := c.Post(uri, request.JSONContent, nil)
 
 	return err
 }
 
 // MaxCurrent implements the api.Charger interface
 func (c *Easee) MaxCurrent(current int64) error {
-	return c.MaxCurrentMillis(float64(current))
-}
-
-var _ api.ChargerEx = (*Easee)(nil)
-
-// MaxCurrentMillis implements the api.ChargerEx interface
-func (c *Easee) MaxCurrentMillis(current float64) error {
-	var current23 float64
-	if c.phases > 1 {
-		current23 = current
+	cur := float64(current)
+	data := easee.ChargerSettings{
+		DynamicChargerCurrent: &cur,
 	}
 
-	data := easee.CircuitSettings{
-		DynamicCircuitCurrentP1: &current,
-		DynamicCircuitCurrentP2: &current23,
-		DynamicCircuitCurrentP3: &current23,
-	}
-
-	uri := fmt.Sprintf("%s/sites/%d/circuits/%d/settings", easee.API, c.site, c.circuit)
+	uri := fmt.Sprintf("%s/chargers/%s/settings", easee.API, c.charger)
 	resp, err := c.Post(uri, request.JSONContent, request.MarshalJSON(data))
 	if err == nil {
+		c.current = cur
 		resp.Body.Close()
-
-		c.updated = time.Time{} // clear cache
-		c.current = current
 	}
 
 	return err
@@ -284,33 +409,90 @@ var _ api.ChargePhases = (*Easee)(nil)
 
 // Phases1p3p implements the api.ChargePhases interface
 func (c *Easee) Phases1p3p(phases int) error {
-	c.phases = phases
-	return c.MaxCurrentMillis(c.current)
+	var err error
+	if c.circuit != 0 {
+		// circuit level
+		uri := fmt.Sprintf("%s/sites/%d/circuits/%d/settings", easee.API, c.site, c.circuit)
+
+		var res easee.CircuitSettings
+		if err := c.GetJSON(uri, &res); err != nil {
+			return err
+		}
+
+		if res.MaxCircuitCurrentP1 == nil || res.MaxCircuitCurrentP2 == nil || res.MaxCircuitCurrentP3 == nil {
+			return errors.New("MaxCircuitCurrent must not be nil")
+		}
+
+		var zero float64
+		max1 := *res.MaxCircuitCurrentP1
+		max2 := *res.MaxCircuitCurrentP2
+		max3 := *res.MaxCircuitCurrentP3
+
+		data := easee.CircuitSettings{
+			DynamicCircuitCurrentP1: &max1,
+			DynamicCircuitCurrentP2: &zero,
+			DynamicCircuitCurrentP3: &zero,
+		}
+
+		if phases > 1 {
+			data.DynamicCircuitCurrentP2 = &max2
+			data.DynamicCircuitCurrentP3 = &max3
+		}
+
+		var resp *http.Response
+		if resp, err = c.Post(uri, request.JSONContent, request.MarshalJSON(data)); err == nil {
+			resp.Body.Close()
+		}
+	} else {
+		// charger level
+		if phases == 3 {
+			phases = 2 // mode 2 means 3p
+		}
+
+		// change phaseMode only if necessary
+		if phases != c.phaseMode {
+			data := easee.ChargerSettings{
+				PhaseMode: &phases,
+			}
+
+			uri := fmt.Sprintf("%s/chargers/%s/settings", easee.API, c.charger)
+
+			var resp *http.Response
+			if resp, err = c.Post(uri, request.JSONContent, request.MarshalJSON(data)); err == nil {
+				resp.Body.Close()
+			}
+		}
+	}
+
+	return err
 }
 
 var _ api.Meter = (*Easee)(nil)
 
 // CurrentPower implements the api.Meter interface
 func (c *Easee) CurrentPower() (float64, error) {
-	res, err := c.state()
-	return 1e3 * res.TotalPower, err
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
+
+	return c.currentPower, nil
 }
 
 var _ api.ChargeRater = (*Easee)(nil)
 
 // ChargedEnergy implements the api.ChargeRater interface
 func (c *Easee) ChargedEnergy() (float64, error) {
-	res, err := c.state()
-	return res.SessionEnergy, err
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
+
+	return c.sessionEnergy, nil
 }
 
 var _ api.MeterCurrent = (*Easee)(nil)
 
 // Currents implements the api.MeterCurrent interface
 func (c *Easee) Currents() (float64, float64, float64, error) {
-	res, err := c.state()
-	return res.CircuitTotalPhaseConductorCurrentL1,
-		res.CircuitTotalPhaseConductorCurrentL2,
-		res.CircuitTotalPhaseConductorCurrentL3,
-		err
+	c.mux.L.Lock()
+	defer c.mux.L.Unlock()
+
+	return c.currentL1, c.currentL2, c.currentL3, nil
 }

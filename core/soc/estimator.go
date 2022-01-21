@@ -50,6 +50,18 @@ func (s *Estimator) Reset() {
 	s.energyPerSocStep = s.virtualCapacity / 100
 }
 
+// AssumedChargeDuration estimates charge duration up to targetSoC based on virtual capacity
+func (s *Estimator) AssumedChargeDuration(targetSoC int, chargePower float64) time.Duration {
+	percentRemaining := float64(targetSoC) - s.vehicleSoc
+
+	if percentRemaining <= 0 {
+		return 0
+	}
+
+	whRemaining := percentRemaining / 100 * s.virtualCapacity
+	return time.Duration(float64(time.Hour) * whRemaining / chargePower).Round(time.Second)
+}
+
 // RemainingChargeDuration returns the remaining duration estimate based on SoC, target and charge power
 func (s *Estimator) RemainingChargeDuration(chargePower float64, targetSoC int) time.Duration {
 	if chargePower > 0 {
@@ -71,9 +83,7 @@ func (s *Estimator) RemainingChargeDuration(chargePower float64, targetSoC int) 
 			}
 		}
 
-		// estimate remaining time
-		whRemaining := percentRemaining / 100 * s.virtualCapacity
-		return time.Duration(float64(time.Hour) * whRemaining / chargePower).Round(time.Second)
+		return s.AssumedChargeDuration(targetSoC, chargePower)
 	}
 
 	return -1
@@ -111,8 +121,8 @@ func (s *Estimator) SoC(chargedEnergy float64) (float64, error) {
 				s.log.WARN.Printf("vehicle soc (charger): %v (ignored by estimator)", err)
 			}
 
-			s.vehicleSoc = f
 			fetchedSoC = &f
+			s.vehicleSoc = f
 		}
 	}
 
@@ -143,9 +153,25 @@ func (s *Estimator) SoC(chargedEnergy float64) (float64, error) {
 		energyDelta := math.Max(chargedEnergy, 0) - s.prevChargedEnergy
 
 		if socDelta != 0 || energyDelta < 0 { // soc value change or unexpected energy reset
+			// compare ChargeState of vehicle and charger
+			var invalid bool
+
+			if vs, ok := s.vehicle.(api.ChargeState); ok {
+				ccs, err := s.charger.Status()
+				if err != nil {
+					return 0, err
+				}
+				vcs, err := vs.Status()
+				if err != nil {
+					vcs = ccs // sanitize vehicle errors
+				} else {
+					s.log.DEBUG.Printf("vehicle status: %s", vcs)
+				}
+				invalid = vcs != ccs
+			}
+
 			// calculate gradient, wh per soc %
-			// TODO: drop samples with unmatching state of evse and vehicle
-			if socDelta > 2 && energyDelta > 0 && s.prevSoC > 0 {
+			if !invalid && socDelta > 2 && energyDelta > 0 && s.prevSoC > 0 {
 				s.energyPerSocStep = energyDelta / socDelta
 				s.virtualCapacity = s.energyPerSocStep * 100
 				s.log.DEBUG.Printf("soc gradient updated: energyPerSocStep: %0.0fWh, virtualCapacity: %0.0fWh", s.energyPerSocStep, s.virtualCapacity)

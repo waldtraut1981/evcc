@@ -1,0 +1,14 @@
+template: bmw
+description: 
+  generic: BMW
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: vin
+  example: WBMW...
+- name: capacity
+  default: 65
+render: |
+  type: bmw
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

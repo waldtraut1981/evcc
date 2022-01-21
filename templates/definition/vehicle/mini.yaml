@@ -1,0 +1,14 @@
+template: mini
+description: 
+  generic: Mini
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: vin
+  example: WBMW...
+- name: capacity
+  default: 32
+render: |
+  type: mini
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

@@ -47,13 +47,12 @@ func (v *API) request(method, uri string, body io.ReadSeeker) (*http.Request, er
 	}
 
 	req, err := request.New(method, uri, body, headers)
-
-	// hack for pinAuth method
-	if strings.HasPrefix(uri, AuthURI) {
-		req.Header.Set("X-Api-Key", XAuthApiKey)
-	}
-
 	if err == nil {
+		// hack for pinAuth method
+		if strings.HasPrefix(uri, AuthURI) {
+			req.Header.Set("X-Api-Key", XAuthApiKey)
+		}
+
 		err = v.identity.Sign(req, body)
 	}
 
@@ -93,6 +92,19 @@ func (v *API) Status(vin string) (StatusResponse, error) {
 	return res, err
 }
 
+func (v *API) Location(vin string) (LocationResponse, error) {
+	var res LocationResponse
+
+	uri := fmt.Sprintf("%s/v1/accounts/%s/vehicles/%s/location/lastknown", ApiURI, v.identity.UID(), vin)
+
+	req, err := v.request(http.MethodGet, uri, nil)
+	if err == nil {
+		err = v.DoJSON(req, &res)
+	}
+
+	return res, err
+}
+
 func (v *API) pinAuth(pin string) (string, error) {
 	var res PinAuthResponse
 
@@ -105,7 +117,6 @@ func (v *API) pinAuth(pin string) (string, error) {
 	}
 
 	req, err := v.request(http.MethodPost, uri, request.MarshalJSON(data))
-
 	if err == nil {
 		err = v.DoJSON(req, &res)
 	}

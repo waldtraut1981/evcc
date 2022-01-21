@@ -29,7 +29,6 @@ import (
 
 // HeidelbergEC charger implementation
 type HeidelbergEC struct {
-	log     *util.Logger
 	conn    *modbus.Connection
 	current uint16
 }
@@ -42,6 +41,8 @@ const (
 	hecRegEnergy        = 17  // Input
 	hecRegStandby       = 258 // Holding
 	hecRegAmpsConfig    = 261 // Holding
+
+	hecStandbyDisabled = 4 // disable standby
 )
 
 var hecRegCurrents = []uint16{6, 7, 8}
@@ -77,16 +78,27 @@ func NewHeidelbergEC(uri, device, comset string, baudrate int, slaveID uint8) (a
 		return nil, api.ErrSponsorRequired
 	}
 
-	log := util.NewLogger("hec")
+	log := util.NewLogger("heidel")
 	conn.Logger(log.TRACE)
 
 	wb := &HeidelbergEC{
-		log:     log,
 		conn:    conn,
 		current: 60, // assume min current
 	}
 
-	return wb, nil
+	// disable standby
+	err = wb.set(hecRegStandby, hecStandbyDisabled)
+
+	return wb, err
+}
+
+func (wb *HeidelbergEC) set(reg, val uint16) error {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, val)
+
+	_, err := wb.conn.WriteMultipleRegisters(reg, 1, b)
+
+	return err
 }
 
 // Status implements the api.Charger interface
@@ -104,7 +116,7 @@ func (wb *HeidelbergEC) Status() (api.ChargeStatus, error) {
 	case 6, 7:
 		return api.StatusC, nil
 	default:
-		return api.StatusNone, fmt.Errorf("invalid status: %0x", sb)
+		return api.StatusNone, fmt.Errorf("invalid status: %d", sb)
 	}
 }
 

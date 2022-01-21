@@ -48,11 +48,9 @@ type Option func(*paho.ClientOptions)
 // NewClient creates new Mqtt publisher
 func NewClient(log *util.Logger, broker, user, password, clientID string, qos byte, opts ...Option) (*Client, error) {
 	broker = util.DefaultPort(broker, 1883)
-	log.INFO.Printf("connecting %s at %s", clientID, broker)
 
 	mc := &Client{
 		log:      log,
-		broker:   broker,
 		Qos:      qos,
 		listener: make(map[string][]func(string)),
 	}
@@ -74,6 +72,14 @@ func NewClient(log *util.Logger, broker, user, password, clientID string, qos by
 	}
 
 	client := paho.NewClient(options)
+
+	or := client.OptionsReader()
+	mc.broker = fmt.Sprintf("%v", or.Servers())
+	if len(or.Servers()) == 1 {
+		mc.broker = or.Servers()[0].String()
+	}
+	log.INFO.Printf("connecting %s at %s", clientID, mc.broker)
+
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
 		return nil, fmt.Errorf("error connecting: %w", token.Error())
 	}
@@ -118,6 +124,16 @@ func (m *Client) Listen(topic string, callback func(string)) {
 	m.mux.Unlock()
 
 	m.listen(topic)
+}
+
+// ListenSetter creates a /set listener that resets the payload after handling
+func (m *Client) ListenSetter(topic string, callback func(string)) {
+	m.Listen(topic, func(payload string) {
+		callback(payload)
+		if err := m.Publish(topic, true, ""); err != nil {
+			m.log.ERROR.Printf("clear: %v", err)
+		}
+	})
 }
 
 // listen attaches listener to topic

@@ -159,6 +159,8 @@ func run(cmd *cobra.Command, args []string) {
 	}
 
 	// setup loadpoints
+	cp.TrackVisitors() // track duplicate usage
+
 	site, err := configureSiteAndLoadpoints(conf)
 	if err != nil {
 		log.FATAL.Fatal(err)
@@ -186,6 +188,9 @@ func run(cmd *cobra.Command, args []string) {
 	socketHub := server.NewSocketHub()
 	httpd := server.NewHTTPd(uri, site, socketHub, cache)
 
+	// allow web access for vehicles
+	cp.webControl(httpd)
+
 	// metrics
 	if viper.GetBool("metrics") {
 		httpd.Router().Handle("/metrics", promhttp.Handler())
@@ -198,7 +203,7 @@ func run(cmd *cobra.Command, args []string) {
 
 	// start HEMS server
 	if conf.HEMS.Type != "" {
-		hems := configureHEMS(conf.HEMS, site, cache, httpd)
+		hems := configureHEMS(conf.HEMS, site, httpd)
 		go hems.Run()
 	}
 
@@ -224,8 +229,8 @@ func run(cmd *cobra.Command, args []string) {
 	pushChan := configureMessengers(conf.Messaging, cache)
 
 	// set channels
-	site.Prepare(valueChan, pushChan)
 	site.DumpConfig()
+	site.Prepare(valueChan, pushChan)
 
 	stopC := make(chan struct{})
 	exitC := make(chan struct{})
@@ -236,7 +241,7 @@ func run(cmd *cobra.Command, args []string) {
 	}()
 
 	// uds health check listener
-	go server.HealthListener(site)
+	go server.HealthListener(site, exitC)
 
 	// catch signals
 	go func() {
@@ -245,7 +250,11 @@ func run(cmd *cobra.Command, args []string) {
 
 		<-signalC    // wait for signal
 		close(stopC) // signal loop to end
-		<-exitC      // wait for loop to end
+
+		select {
+		case <-exitC: // wait for loop to end
+		case <-time.NewTimer(conf.Interval).C: // wait max 1 period
+		}
 
 		os.Exit(1)
 	}()

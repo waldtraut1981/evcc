@@ -1,0 +1,12 @@
+template: nissan
+description: 
+  generic: Nissan
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: capacity
+  default: 60
+render: |
+  type: nissan
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

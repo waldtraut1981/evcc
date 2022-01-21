@@ -262,8 +262,8 @@ func TestPVHysteresis(t *testing.T) {
 			{-500, 1, 0},
 			{-499, dt - 1, 0}, // should reset timer
 			{-500, dt + 1, 0}, // new begin of timer
-			{-500, 2*dt - 2, 0},
-			{-500, 2*dt - 1, minA},
+			{-500, 2 * dt, 0},
+			{-500, 2*dt + 1, minA},
 		}},
 		// reset enable timer when threshold not met while timer active and threshold not configured
 		{false, 0, 0, []se{
@@ -271,16 +271,16 @@ func TestPVHysteresis(t *testing.T) {
 			{-6 * 100 * 10, dt + 1, 0},
 			{-6 * 100 * 10, dt + 2, 0},
 			{-6 * 100 * 10, 2 * dt, 0},
-			{-6 * 100 * 10, 2*dt + 2, minA},
+			{-6 * 100 * 10, 2*dt + 1, minA},
 		}},
 		// reset disable timer when threshold not met while timer active
 		{true, 0, 500, []se{
 			{500, 0, minA},
 			{500, 1, minA},
-			{499, dt - 1, minA},   // reset timer
-			{500, dt + 1, minA},   // within reset timer duration
-			{500, 2*dt - 2, minA}, // still within reset timer duration
-			{500, 2*dt - 1, 0},    // reset timer elapsed
+			{499, dt - 1, minA}, // reset timer
+			{500, dt + 1, minA}, // within reset timer duration
+			{500, 2 * dt, minA}, // still within reset timer duration
+			{500, 2*dt + 1, 0},  // reset timer elapsed
 		}},
 	}
 
@@ -379,9 +379,10 @@ func TestDisableAndEnableAtTargetSoC(t *testing.T) {
 		bus:          evbus.New(),
 		clock:        clock,
 		charger:      charger,
-		chargeMeter:  &Null{}, // silence nil panics
-		chargeRater:  &Null{}, // silence nil panics
-		chargeTimer:  &Null{}, // silence nil panics
+		chargeMeter:  &Null{},            // silence nil panics
+		chargeRater:  &Null{},            // silence nil panics
+		chargeTimer:  &Null{},            // silence nil panics
+		progress:     NewProgress(0, 10), // silence nil panics
 		MinCurrent:   minA,
 		MaxCurrent:   maxA,
 		vehicle:      vehicle,      // needed for targetSoC check
@@ -456,16 +457,15 @@ func TestSetModeAndSocAtDisconnect(t *testing.T) {
 		MinCurrent:  minA,
 		MaxCurrent:  maxA,
 		status:      api.StatusC,
-		OnDisconnect: struct {
-			Mode      api.ChargeMode `mapstructure:"mode"`      // Charge mode to apply when car disconnected
-			TargetSoC int            `mapstructure:"targetSoC"` // Target SoC to apply when car disconnected
-		}{
-			Mode:      api.ModeOff,
-			TargetSoC: 70,
+		Mode:        api.ModeOff,
+		SoC: SoCConfig{
+			Target: 70,
 		},
+		ResetOnDisconnect: true,
 	}
 
 	attachListeners(t, lp)
+	lp.collectDefaults()
 
 	lp.enabled = true
 	lp.chargeCurrent = float64(minA)
@@ -764,35 +764,35 @@ func TestVehicleDetectByID(t *testing.T) {
 	}
 	tc := []testcase{
 		{"1/_/_->0", "1", "", "", nil, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
+			v1.EXPECT().Identifiers().Return(nil)
+			v2.EXPECT().Identifiers().Return(nil)
+			v1.EXPECT().Identifiers().Return(nil)
+			v2.EXPECT().Identifiers().Return(nil)
 		}},
 		{"1/1/2->1", "1", "1", "2", v1, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
 		}},
 		{"2/1/2->2", "2", "1", "2", v2, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
 		}},
 		{"11/1*/2->1", "11", "1*", "2", v1, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			// v2.EXPECT().Identify().Return(tc.i2, nil)
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
+			// v2.EXPECT().Identifiers().Return([]string{tc.i2})
 		}},
 		{"22/1*/2*->2", "22", "1*", "2*", v2, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
+			v1.EXPECT().Identifiers().Return([]string{tc.i1})
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
 		}},
 		{"2/_/*->2", "2", "", "*", v2, func(tc testcase) {
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
-			v1.EXPECT().Identify().Return(tc.i1, nil)
-			v2.EXPECT().Identify().Return(tc.i2, nil)
+			v1.EXPECT().Identifiers().Return(nil)
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
+			v1.EXPECT().Identifiers().Return(nil)
+			v2.EXPECT().Identifiers().Return([]string{tc.i2})
 		}},
 	}
 
@@ -882,7 +882,16 @@ func TestScalePhases(t *testing.T) {
 		{"3/3->1, timer elapsed", 3, 3, 1 * Voltage * maxA, 1, true, func(lp *LoadPoint) {
 			lp.phaseTimer = lp.clock.Now().Add(-dt)
 		}},
-		{"3/3->1, switch executed", 1, 3, 1 * Voltage * maxA, 1, false, func(lp *LoadPoint) {
+
+		// error states from 1p/3p misconfig - no correction for time being (stay at 1p)
+		{"1/3->1, enough power", 1, 3, 1 * Voltage * maxA, 1, false, nil},
+		{"1/3->1, kickoff, correct phase setting", 1, 3, 1 * Voltage * maxA, 1, false, func(lp *LoadPoint) {
+			lp.phaseTimer = time.Time{}
+		}},
+		{"1/3->1, timer running, correct phase setting", 1, 3, 1 * Voltage * maxA, 1, false, func(lp *LoadPoint) {
+			lp.phaseTimer = lp.clock.Now()
+		}},
+		{"1/3->1, switch not executed", 1, 3, 1 * Voltage * maxA, 1, false, func(lp *LoadPoint) {
 			lp.phaseTimer = lp.clock.Now().Add(-dt)
 		}},
 	}
@@ -921,6 +930,53 @@ func TestScalePhases(t *testing.T) {
 			if lp.Phases != tc.toPhases {
 				t.Errorf("expected %dp, got %dp", tc.toPhases, lp.Phases)
 			}
+		}
+	}
+}
+
+func TestVehiclePhases(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	vehicle := &struct {
+		*mock.MockVehicle
+		*mock.MockVehiclePhases
+	}{
+		mock.NewMockVehicle(ctrl),
+		mock.NewMockVehiclePhases(ctrl),
+	}
+
+	tc := []struct {
+		phases, activePhases, vehiclePhases int
+		res                                 int
+	}{
+		{1, 1, 0, 1}, // leave as-is
+		{3, 1, 0, 1}, // leave as-is
+		{3, 3, 0, 3}, // leave as-is
+		{1, 1, 1, 1}, // leave as-is
+		{3, 1, 1, 1}, // leave as-is
+		{3, 3, 1, 1}, // limit to 1p
+		{1, 1, 2, 1}, // leave as-is
+		{3, 1, 2, 2}, // limit to 2p
+		{3, 3, 2, 2}, // limit to 2p
+		{1, 1, 3, 1}, // leave as-is
+		{3, 1, 3, 3}, // limit to 3p
+		{3, 3, 3, 3}, // leave as-is
+	}
+
+	for _, tc := range tc {
+		t.Logf("%+v", tc)
+
+		lp := &LoadPoint{
+			log:          util.NewLogger("foo"),
+			vehicle:      vehicle,
+			Phases:       tc.phases,
+			activePhases: tc.activePhases,
+		}
+
+		vehicle.MockVehiclePhases.EXPECT().Phases().Return(tc.vehiclePhases)
+
+		lp.setVehiclePhases()
+		if lp.activePhases != tc.res {
+			t.Errorf("expected %v, got %v", tc.res, lp.activePhases)
 		}
 	}
 }

@@ -4,7 +4,6 @@ import i18n from "../i18n";
 export default {
   title: "Main/Vehicle",
   component: Vehicle,
-  argTypes: {},
 };
 
 const Template = (args, { argTypes }) => ({
@@ -20,7 +19,7 @@ Base.args = {
   enabled: true,
   connected: true,
   vehiclePresent: true,
-  vehicleSoc: 42,
+  vehicleSoC: 42,
   targetSoC: 90,
   id: 0,
 };
@@ -32,7 +31,7 @@ Connected.args = {
   connected: true,
   vehiclePresent: true,
   charging: false,
-  vehicleSoc: 66,
+  vehicleSoC: 66,
   targetSoC: 90,
   id: 0,
 };
@@ -44,7 +43,7 @@ ReadyToCharge.args = {
   connected: true,
   vehiclePresent: true,
   charging: false,
-  vehicleSoc: 66,
+  vehicleSoC: 66,
   targetSoC: 90,
   id: 0,
 };
@@ -56,9 +55,10 @@ Charging.args = {
   connected: true,
   vehiclePresent: true,
   charging: true,
-  vehicleSoc: 66,
+  vehicleSoC: 66,
   targetSoC: 90,
   id: 0,
+  targetTimeHourSuggestion: null,
 };
 
 const hoursFromNow = function (hours) {
@@ -73,11 +73,10 @@ TargetChargePlanned.args = {
   enabled: false,
   connected: true,
   vehiclePresent: true,
-  vehicleSoc: 31,
+  vehicleSoC: 31,
   minSoC: 20,
   charging: false,
-  timerSet: true,
-  timerActive: false,
+  targetTimeActive: false,
   targetSoC: 45,
   targetTime: hoursFromNow(14),
   id: 0,
@@ -89,11 +88,10 @@ TargetChargeActive.args = {
   enabled: true,
   connected: true,
   vehiclePresent: true,
-  vehicleSoc: 66,
+  vehicleSoC: 66,
   minSoC: 30,
   charging: true,
-  timerSet: true,
-  timerActive: true,
+  targetTimeActive: true,
   targetSoC: 80,
   targetTime: hoursFromNow(2),
   id: 0,
@@ -105,7 +103,7 @@ MinCharge.args = {
   enabled: true,
   connected: true,
   vehiclePresent: true,
-  vehicleSoc: 17,
+  vehicleSoC: 17,
   minSoC: 20,
   charging: true,
   targetSoC: 90,
@@ -118,6 +116,7 @@ UnknownVehicleConnected.args = {
   enabled: false,
   connected: true,
   vehiclePresent: false,
+  targetSoC: 90,
   id: 0,
 };
 
@@ -128,6 +127,7 @@ UnknownVehicleReadyToCharge.args = {
   connected: true,
   vehiclePresent: false,
   charging: false,
+  targetSoC: 100,
   id: 0,
 };
 
@@ -138,6 +138,7 @@ UnknownVehicleCharging.args = {
   connected: true,
   vehiclePresent: false,
   charging: true,
+  targetSoC: 90,
   id: 0,
 };
 
@@ -146,6 +147,7 @@ Disconnected.args = {
   vehicleTitle: "Mein Auto",
   connected: false,
   vehiclePresent: false,
+  targetSoC: 75,
   id: 0,
 };
 
@@ -155,7 +157,7 @@ DisconnectedKnownSoc.args = {
   connected: false,
   enabled: false,
   vehiclePresent: true,
-  vehicleSoc: 17,
+  vehicleSoC: 17,
   targetSoC: 60,
   id: 0,
 };

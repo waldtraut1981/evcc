@@ -1,0 +1,12 @@
+template: seat
+description: 
+  generic: Seat (Cupra, Mii)
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: capacity
+  default: 10
+render: |
+  type: seat
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

@@ -16,10 +16,12 @@ import (
 	"github.com/evcc-io/evcc/provider"
 	"github.com/evcc-io/evcc/push"
 	"github.com/evcc-io/evcc/util"
+	"github.com/thoas/go-funk"
 
 	evbus "github.com/asaskevich/EventBus"
 	"github.com/avast/retry-go/v3"
 	"github.com/benbjohnson/clock"
+	"github.com/cjrd/allocate"
 )
 
 const (
@@ -29,11 +31,26 @@ const (
 	evChargePower       = "power"      // update chargeRater
 	evVehicleConnect    = "connect"    // vehicle connected
 	evVehicleDisconnect = "disconnect" // vehicle disconnected
+	evVehicleSoC        = "soc"        // vehicle soc progress
+
+	pvTimer   = "pv"
+	pvEnable  = "enable"
+	pvDisable = "disable"
+
+	phaseTimer   = "phase"
+	phaseScale1p = "scale1p"
+	phaseScale3p = "scale3p"
+
+	timerInactive = "inactive"
 
 	minActiveCurrent      = 1.0 // minimum current at which a phase is treated as active
 	vehicleDetectInterval = 3 * time.Minute
 	vehicleDetectDuration = 10 * time.Minute
+	settleDuration        = 100 * time.Millisecond
 )
+
+// elapsed is the time an expired timer will be set to
+var elapsed = time.Unix(0, 1)
 
 // PollConfig defines the vehicle polling mode and interval
 type PollConfig struct {
@@ -64,12 +81,6 @@ type ThresholdConfig struct {
 	Threshold float64
 }
 
-// ActionConfig defines an action to take on event
-type ActionConfig struct {
-	Mode      api.ChargeMode `mapstructure:"mode"`      // Charge mode to apply when car disconnected
-	TargetSoC int            `mapstructure:"targetSoC"` // Target SoC to apply when car disconnected
-}
-
 // LoadPoint is responsible for controlling charge depending on
 // SoC needs and power availability.
 type LoadPoint struct {
@@ -92,10 +103,12 @@ type LoadPoint struct {
 	Meters      struct {
 		ChargeMeterRef string `mapstructure:"charge"` // Charge meter reference
 	}
-	SoC             SoCConfig
-	OnDisconnect    ActionConfig            `mapstructure:"onDisconnect"`
-	OnIdentify      map[string]ActionConfig `mapstructure:"onIdentify"`
-	Enable, Disable ThresholdConfig
+	SoC               SoCConfig
+	OnDisconnect_     interface{} `mapstructure:"onDisconnect"`
+	OnIdentify_       interface{} `mapstructure:"onIdentify"`
+	Enable, Disable   ThresholdConfig
+	ResetOnDisconnect bool `mapstructure:"resetOnDisconnect"`
+	onDisconnect      api.ActionConfig
 
 	MinCurrent    float64       // PV mode: start current	Min+PV mode: min current
 	MaxCurrent    float64       // Max allowed current. Physically ensured by the charger
@@ -135,8 +148,7 @@ type LoadPoint struct {
 	chargedEnergy           float64       // Charged energy while connected in Wh
 	chargeRemainingDuration time.Duration // Remaining charge duration
 	chargeRemainingEnergy   float64       // Remaining charge energy in Wh
-
-	tasks []func() error // task list for repeated execution
+	progress                *Progress     // Step-wise progress indicator
 }
 
 // NewLoadPointFromConfig creates a new loadpoint
@@ -150,12 +162,20 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 	switch lp.SoC.Poll.Mode = strings.ToLower(lp.SoC.Poll.Mode); lp.SoC.Poll.Mode {
 	case pollCharging:
 	case pollConnected, pollAlways:
-		log.WARN.Printf("poll mode '%s' may deplete your battery or lead to API misuse. USE AT YOUR OWN RISK.", lp.SoC.Poll)
+		lp.log.WARN.Printf("poll mode '%s' may deplete your battery or lead to API misuse. USE AT YOUR OWN RISK.", lp.SoC.Poll)
 	default:
 		if lp.SoC.Poll.Mode != "" {
-			log.WARN.Printf("invalid poll mode: %s", lp.SoC.Poll.Mode)
+			lp.log.WARN.Printf("invalid poll mode: %s", lp.SoC.Poll.Mode)
 		}
 		lp.SoC.Poll.Mode = pollConnected
+	}
+
+	if lp.OnIdentify_ != nil {
+		lp.log.WARN.Printf("loadpoint.onIdentify is deprecated and will be removed in a future release. Use vehicle.onIdentify instead.")
+	}
+
+	if lp.OnDisconnect_ != nil {
+		lp.log.WARN.Printf("loadpoint.onDisconnect is deprecated and will be removed in a future release. Use loadpoint.resetOnDisconnect instead.")
 	}
 
 	// set vehicle polling interval
@@ -163,24 +183,20 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 		if lp.SoC.Poll.Interval == 0 {
 			lp.SoC.Poll.Interval = pollInterval
 		} else {
-			log.WARN.Printf("poll interval '%v' is lower than %v and may deplete your battery or lead to API misuse. USE AT YOUR OWN RISK.", lp.SoC.Poll.Interval, pollInterval)
-		}
-	}
-
-	if lp.SoC.Target == 0 {
-		lp.SoC.Target = lp.OnDisconnect.TargetSoC // use disconnect value as default soc
-		if lp.SoC.Target == 0 {
-			lp.SoC.Target = 100
+			lp.log.WARN.Printf("poll interval '%v' is lower than %v and may deplete your battery or lead to API misuse. USE AT YOUR OWN RISK.", lp.SoC.Poll.Interval, pollInterval)
 		}
 	}
 
 	if lp.MinCurrent == 0 {
-		log.WARN.Println("minCurrent must not be zero")
+		lp.log.WARN.Println("minCurrent must not be zero")
 	}
 
 	if lp.MaxCurrent <= lp.MinCurrent {
-		log.WARN.Println("maxCurrent must be larger than minCurrent")
+		lp.log.WARN.Println("maxCurrent must be larger than minCurrent")
 	}
+
+	// store defaults
+	lp.collectDefaults()
 
 	if lp.Meters.ChargeMeterRef != "" {
 		lp.chargeMeter = cp.Meter(lp.Meters.ChargeMeterRef)
@@ -208,16 +224,17 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 	lp.configureChargerType(lp.charger)
 
 	// ensure 1p setup for switchable charger (https://github.com/evcc-io/evcc/issues/1572)
-	if _, ok := lp.charger.(api.ChargePhases); ok {
-		lp.setPhases(1)
+	if _, ok := lp.charger.(api.ChargePhases); ok && lp.Phases != 0 {
+		lp.log.WARN.Printf("ignoring phases config (%dp) for switchable charger", lp.Phases)
+		lp.setPhases(0)
 	}
 
 	// allow target charge handler to access loadpoint
 	lp.socTimer = soc.NewTimer(lp.log, &adapter{LoadPoint: lp})
 	if lp.Enable.Threshold > lp.Disable.Threshold {
-		log.WARN.Printf("PV mode enable threshold (%.0fW) is larger than disable threshold (%.0fW)", lp.Enable.Threshold, lp.Disable.Threshold)
+		lp.log.WARN.Printf("PV mode enable threshold (%.0fW) is larger than disable threshold (%.0fW)", lp.Enable.Threshold, lp.Disable.Threshold)
 	} else if lp.Enable.Threshold > 0 {
-		log.WARN.Printf("PV mode enable threshold %.0fW > 0 will start PV charging on grid power consumption. Did you mean -%.0f?", lp.Enable.Threshold, lp.Enable.Threshold)
+		lp.log.WARN.Printf("PV mode enable threshold %.0fW > 0 will start PV charging on grid power consumption. Did you mean -%.0f?", lp.Enable.Threshold, lp.Enable.Threshold)
 	}
 
 	return lp, nil
@@ -235,12 +252,32 @@ func NewLoadPoint(log *util.Logger) *LoadPoint {
 		Mode:          api.ModeOff,
 		Phases:        3,
 		status:        api.StatusNone,
-		MinCurrent:    6,  // A
-		MaxCurrent:    16, // A
+		MinCurrent:    6,                              // A
+		MaxCurrent:    16,                             // A
+		SoC:           SoCConfig{Min: 0, Target: 100}, // %
 		GuardDuration: 5 * time.Minute,
+		progress:      NewProgress(0, 10), // soc progress indicator
 	}
 
 	return lp
+}
+
+// collectDefaults collects default values for use on disconnect
+func (lp *LoadPoint) collectDefaults() {
+	// get reference to action config
+	actionCfg := &lp.onDisconnect
+
+	// allocate action config such that all pointer fields are fully allocated
+	if err := allocate.Zero(actionCfg); err == nil {
+		// initialize with default values
+		*actionCfg.Mode = lp.GetMode()
+		*actionCfg.MinCurrent = lp.GetMinCurrent()
+		*actionCfg.MaxCurrent = lp.GetMaxCurrent()
+		*actionCfg.MinSoC = lp.GetMinSoC()
+		*actionCfg.TargetSoC = lp.GetTargetSoC()
+	} else {
+		lp.log.ERROR.Printf("error allocating action config: %v", err)
+	}
 }
 
 // requestUpdate requests site to update this loadpoint
@@ -317,6 +354,12 @@ func (lp *LoadPoint) evChargeStopHandler() {
 
 	// soc update reset
 	lp.socUpdated = time.Time{}
+
+	// reset pv enable/disable timer
+	// https://github.com/evcc-io/evcc/issues/2289
+	if !lp.pvTimer.Equal(elapsed) {
+		lp.resetPVTimerIfRunning()
+	}
 }
 
 // evVehicleConnectHandler sends external start event
@@ -343,8 +386,10 @@ func (lp *LoadPoint) evVehicleConnectHandler() {
 	lp.log.DEBUG.Println("vehicle api refresh")
 	provider.ResetCached()
 
-	// identify active vehicle
-	lp.startVehicleDetection()
+	// start detection if we have multiple vehicles
+	if len(lp.vehicles) > 1 {
+		lp.startVehicleDetection()
+	}
 
 	// immediately allow pv mode activity
 	lp.elapsePVTimer()
@@ -362,16 +407,38 @@ func (lp *LoadPoint) evVehicleDisconnectHandler() {
 
 	lp.pushEvent(evVehicleDisconnect)
 
-	// remove active vehicle
+	// remove active vehicle if we have multiple vehicles
 	if len(lp.vehicles) > 1 {
 		lp.setActiveVehicle(nil)
 	}
 
+	// keep single vehicle to allow poll mode: always
+	if len(lp.vehicles) == 1 {
+		// but reset values if poll mode is not always (i.e. connected or charging)
+		if lp.SoC.Poll.Mode != pollAlways {
+			lp.publish("vehicleSoC", -1)
+			lp.publish("vehicleRange", -1)
+			lp.setRemainingDuration(-1)
+		}
+	}
+
 	// set default mode on disconnect
-	lp.applyAction(lp.OnDisconnect)
+	if lp.ResetOnDisconnect {
+		lp.applyAction(lp.onDisconnect)
+	}
 
 	// soc update reset
 	lp.socUpdated = time.Time{}
+
+	// reset timer when vehicle is removed
+	lp.socTimer.Reset()
+}
+
+// evVehicleSoCProgressHandler sends external start event
+func (lp *LoadPoint) evVehicleSoCProgressHandler(soc float64) {
+	if lp.progress.NextStep(soc) {
+		lp.pushEvent(evVehicleSoC)
+	}
 }
 
 // evChargeCurrentHandler publishes the charge current
@@ -400,12 +467,21 @@ func (lp *LoadPoint) evChargeCurrentWrappedMeterHandler(current float64) {
 }
 
 // applyAction executes the action
-func (lp *LoadPoint) applyAction(action ActionConfig) {
-	if action.Mode != "" && lp.GetMode() != api.ModeEmpty {
-		lp.SetMode(action.Mode)
+func (lp *LoadPoint) applyAction(actionCfg api.ActionConfig) {
+	if actionCfg.Mode != nil {
+		lp.SetMode(*actionCfg.Mode)
 	}
-	if action.TargetSoC != 0 {
-		_ = lp.SetTargetSoC(action.TargetSoC)
+	if actionCfg.MinCurrent != nil {
+		lp.SetMinCurrent(*actionCfg.MinCurrent)
+	}
+	if actionCfg.MaxCurrent != nil {
+		lp.SetMaxCurrent(*actionCfg.MaxCurrent)
+	}
+	if actionCfg.MinSoC != nil {
+		lp.SetMinSoC(*actionCfg.MinSoC)
+	}
+	if actionCfg.TargetSoC != nil {
+		lp.SetTargetSoC(*actionCfg.TargetSoC)
 	}
 }
 
@@ -429,6 +505,7 @@ func (lp *LoadPoint) Prepare(uiChan chan<- util.Param, pushChan chan<- push.Even
 	_ = lp.bus.Subscribe(evVehicleConnect, lp.evVehicleConnectHandler)
 	_ = lp.bus.Subscribe(evVehicleDisconnect, lp.evVehicleDisconnectHandler)
 	_ = lp.bus.Subscribe(evChargeCurrent, lp.evChargeCurrentHandler)
+	_ = lp.bus.Subscribe(evVehicleSoC, lp.evVehicleSoCProgressHandler)
 
 	// publish initial values
 	lp.publish("title", lp.Title)
@@ -453,6 +530,9 @@ func (lp *LoadPoint) Prepare(uiChan chan<- util.Param, pushChan chan<- push.Even
 	if len(lp.vehicles) > 1 {
 		lp.startVehicleDetection()
 	}
+
+	// publish providerLogins
+	lp.publishProviderLogins()
 
 	// read initial charger state to prevent immediately disabling charger
 	if enabled, err := lp.charger.Enabled(); err == nil {
@@ -491,9 +571,10 @@ func (lp *LoadPoint) syncCharger() {
 }
 
 // setLimit applies charger current limits and enables/disables accordingly
-func (lp *LoadPoint) setLimit(chargeCurrent float64, force bool) (err error) {
+func (lp *LoadPoint) setLimit(chargeCurrent float64, force bool) error {
 	// set current
 	if chargeCurrent != lp.chargeCurrent && chargeCurrent >= lp.GetMinCurrent() {
+		var err error
 		if charger, ok := lp.charger.(api.ChargerEx); ok {
 			err = charger.MaxCurrentMillis(chargeCurrent)
 		} else {
@@ -501,50 +582,52 @@ func (lp *LoadPoint) setLimit(chargeCurrent float64, force bool) (err error) {
 			err = lp.charger.MaxCurrent(int64(chargeCurrent))
 		}
 
-		if err == nil {
-			lp.chargeCurrent = chargeCurrent
-			lp.bus.Publish(evChargeCurrent, chargeCurrent)
-			lp.log.DEBUG.Printf("max charge current: %.3gA", chargeCurrent)
-		} else {
-			err = fmt.Errorf("max charge current %.3g: %w", chargeCurrent, err)
+		if err != nil {
+			return fmt.Errorf("max charge current %.3gA: %w", chargeCurrent, err)
 		}
+
+		lp.log.DEBUG.Printf("max charge current: %.3gA", chargeCurrent)
+		lp.chargeCurrent = chargeCurrent
+		lp.bus.Publish(evChargeCurrent, chargeCurrent)
 	}
 
 	// set enabled/disabled
-	if enabled := chargeCurrent >= lp.GetMinCurrent(); enabled != lp.enabled && err == nil {
+	if enabled := chargeCurrent >= lp.GetMinCurrent(); enabled != lp.enabled {
 		if remaining := (lp.GuardDuration - lp.clock.Since(lp.guardUpdated)).Truncate(time.Second); remaining > 0 && !force {
 			lp.log.DEBUG.Printf("charger %s: contactor delay %v", status[enabled], remaining)
 			return nil
 		}
 
 		// sleep vehicle
-		if car, ok := lp.vehicle.(api.VehicleStopCharge); !enabled && ok {
-			// log but don't propagate
-			if err := car.StopCharge(); err != nil {
-				lp.log.ERROR.Printf("vehicle remote charge stop: %v", err)
-			}
+		// TODO https://github.com/evcc-io/evcc/discussions/1929
+		// if car, ok := lp.vehicle.(api.VehicleStopCharge); !enabled && ok {
+		// 	// log but don't propagate
+		// 	if err := car.StopCharge(); err != nil {
+		// 		lp.log.ERROR.Printf("vehicle remote charge stop: %v", err)
+		// 	}
+		// }
+
+		if err := lp.charger.Enable(enabled); err != nil {
+			return fmt.Errorf("charger %s: %w", status[enabled], err)
 		}
 
 		lp.log.DEBUG.Printf("charger %s", status[enabled])
-		if err = lp.charger.Enable(enabled); err == nil {
-			lp.enabled = enabled
-			lp.guardUpdated = lp.clock.Now()
+		lp.enabled = enabled
+		lp.guardUpdated = lp.clock.Now()
 
-			lp.bus.Publish(evChargeCurrent, chargeCurrent)
+		lp.bus.Publish(evChargeCurrent, chargeCurrent)
 
-			// wake up vehicle
-			if car, ok := lp.vehicle.(api.VehicleStartCharge); enabled && ok {
-				// log but don't propagate
-				if err := car.StartCharge(); err != nil {
-					lp.log.ERROR.Printf("vehicle remote charge start: %v", err)
-				}
-			}
-		} else {
-			err = fmt.Errorf("charger %s: %w", status[enabled], err)
-		}
+		// wake up vehicle
+		// TODO https://github.com/evcc-io/evcc/discussions/1929
+		// if car, ok := lp.vehicle.(api.VehicleStartCharge); enabled && ok {
+		// 	// log but don't propagate
+		// 	if err := car.StartCharge(); err != nil {
+		// 		lp.log.ERROR.Printf("vehicle remote charge start: %v", err)
+		// 	}
+		// }
 	}
 
-	return err
+	return nil
 }
 
 // connected returns the EVs connection state
@@ -648,11 +731,6 @@ func (lp *LoadPoint) identifyVehicle() {
 		if vehicle := lp.selectVehicleByID(id); vehicle != nil {
 			lp.setActiveVehicle(vehicle)
 		}
-
-		if action, ok := lp.OnIdentify[id]; ok {
-			lp.log.DEBUG.Println("running vehicle action:", action)
-			lp.applyAction(action)
-		}
 	}
 }
 
@@ -660,14 +738,14 @@ func (lp *LoadPoint) identifyVehicle() {
 func (lp *LoadPoint) selectVehicleByID(id string) api.Vehicle {
 	// find exact match
 	for _, vehicle := range lp.vehicles {
-		if vid, err := vehicle.Identify(); err == nil && vid == id {
+		if funk.ContainsString(vehicle.Identifiers(), id) {
 			return vehicle
 		}
 	}
 
 	// find placeholder match
 	for _, vehicle := range lp.vehicles {
-		if vid, err := vehicle.Identify(); err == nil && vid != "" {
+		for _, vid := range vehicle.Identifiers() {
 			re, err := regexp.Compile(strings.ReplaceAll(vid, "*", ".*?"))
 			if err != nil {
 				lp.log.ERROR.Printf("vehicle id: %v", err)
@@ -708,15 +786,21 @@ func (lp *LoadPoint) setActiveVehicle(vehicle api.Vehicle) {
 		lp.publish("vehicleTitle", lp.vehicle.Title())
 		lp.publish("vehicleCapacity", lp.vehicle.Capacity())
 
-		lp.task(lp.odometer)
+		lp.applyAction(vehicle.OnIdentified())
+
+		lp.setVehiclePhases()
+
+		lp.progress.Reset()
 	} else {
 		lp.socEstimator = nil
 
 		lp.publish("vehiclePresent", false)
 		lp.publish("vehicleTitle", "")
 		lp.publish("vehicleCapacity", int64(0))
-		lp.publish("vehicleOdometer", 0.0)
 	}
+
+	lp.publish("vehicleRange", int64(0))
+	lp.publish("vehicleOdometer", 0.0)
 }
 
 // startVehicleDetection resets connection timer and starts api refresh timer
@@ -727,7 +811,8 @@ func (lp *LoadPoint) startVehicleDetection() {
 
 // vehicleUnidentified checks if loadpoint has multiple vehicles associated and starts discovery period
 func (lp *LoadPoint) vehicleUnidentified() bool {
-	res := len(lp.vehicles) > 1 && lp.clock.Since(lp.vehicleConnected) < vehicleDetectDuration
+	res := len(lp.vehicles) > 1 && lp.vehicle == nil &&
+		lp.clock.Since(lp.vehicleConnected) < vehicleDetectDuration
 
 	// request vehicle api refresh while waiting to identify
 	if res {
@@ -789,8 +874,8 @@ func (lp *LoadPoint) updateChargerStatus() error {
 			lp.bus.Publish(evChargeStop)
 		}
 
-		// changed to A - disconnected
-		if status == api.StatusA {
+		// changed to A - disconnected - don't send on startup
+		if status == api.StatusA && prevStatus != api.StatusNone {
 			lp.bus.Publish(evVehicleDisconnect)
 		}
 
@@ -803,14 +888,14 @@ func (lp *LoadPoint) updateChargerStatus() error {
 
 // effectiveCurrent returns the currently effective charging current
 func (lp *LoadPoint) effectiveCurrent() float64 {
+	if lp.GetStatus() != api.StatusC {
+		return 0
+	}
+
 	// adjust actual current for vehicles like Zoe where it remains below target
 	if lp.chargeCurrents != nil {
 		cur := lp.chargeCurrents[0]
 		return math.Min(cur+2.0, lp.chargeCurrent)
-	}
-
-	if lp.GetStatus() != api.StatusC {
-		return 0
 	}
 
 	return lp.chargeCurrent
@@ -818,8 +903,47 @@ func (lp *LoadPoint) effectiveCurrent() float64 {
 
 // elapsePVTimer puts the pv enable/disable timer into elapsed state
 func (lp *LoadPoint) elapsePVTimer() {
-	lp.pvTimer = lp.clock.Now().Add(-lp.Disable.Delay)
-	lp.guardUpdated = lp.clock.Now().Add(-lp.GuardDuration)
+	lp.log.DEBUG.Printf("pv timer elapse")
+
+	lp.pvTimer = elapsed
+	lp.guardUpdated = elapsed
+
+	lp.publishTimer(pvTimer, 0, timerInactive)
+}
+
+// resetPVTimerIfRunning resets the pv enable/disable timer to disabled state
+func (lp *LoadPoint) resetPVTimerIfRunning(typ ...string) {
+	if lp.pvTimer.IsZero() {
+		return
+	}
+
+	msg := "pv timer reset"
+	if len(typ) == 1 {
+		msg = fmt.Sprintf("pv %s timer reset", typ)
+	}
+	lp.log.DEBUG.Printf(msg)
+
+	lp.pvTimer = time.Time{}
+	lp.publishTimer(pvTimer, 0, timerInactive)
+}
+
+// setVehiclePhases sets the expected active phases by the vehicle
+func (lp *LoadPoint) setVehiclePhases() {
+	if v, ok := lp.vehicle.(api.VehiclePhases); ok {
+		if phases := v.Phases(); phases > 0 {
+			lp.log.DEBUG.Printf("vehicle phases: %dp", phases)
+
+			lp.Lock()
+			defer lp.Unlock()
+
+			if phases > lp.Phases {
+				phases = lp.Phases
+			}
+
+			lp.activePhases = phases
+			lp.publish("activePhases", lp.activePhases)
+		}
+	}
 }
 
 // scalePhasesIfAvailable scales if api.ChargePhases is available
@@ -839,6 +963,18 @@ func (lp *LoadPoint) setPhases(phases int) {
 	if lp.Phases != phases {
 		lp.Phases = phases
 		lp.publish("phases", lp.Phases)
+
+		if phases < lp.activePhases {
+			// When scaling down, charger will temporarily disable. During this time, activePhases will not be updated
+			// since all currents are zero. This will lead to inconsistent state when scaling is triggered again
+			// (1p configured vs 3p active). Update activePhases to reflect the current state of the charger.
+			lp.activePhases = phases
+			lp.publish("activePhases", lp.activePhases)
+		} else {
+			// When scaling up, charger will offer more phases than vehicle can use.
+			// Adjust to enable subsequent PV restart at lower powers than full 3p.
+			lp.setVehiclePhases()
+		}
 	}
 }
 
@@ -880,18 +1016,18 @@ func (lp *LoadPoint) scalePhases(phases int) error {
 
 // pvScalePhases switches phases if necessary and returns if switch occurred
 func (lp *LoadPoint) pvScalePhases(availablePower, minCurrent, maxCurrent float64) bool {
-	var waiting bool
-
 	phases := lp.GetPhases()
-	targetCurrent := availablePower / Voltage / float64(lp.activePhases)
 
-	// ignore charger state inconsistency if switchable (https://github.com/evcc-io/evcc/issues/1572)
-	if _, ok := lp.charger.(api.ChargePhases); !ok && phases < lp.activePhases {
-		lp.log.WARN.Printf("charger out of sync: %dp active @ %dp configured", lp.activePhases, phases)
+	// observed phase state inconsistency (https://github.com/evcc-io/evcc/issues/1572, https://github.com/evcc-io/evcc/issues/2230)
+	if phases < lp.activePhases {
+		lp.log.WARN.Printf("ignoring inconsistent phases: %dp < %dp observed active", phases, lp.activePhases)
 	}
 
+	var waiting bool
+	targetCurrent := availablePower / Voltage / float64(lp.activePhases)
+
 	// scale down phases
-	if targetCurrent < minCurrent && phases > 1 && lp.activePhases > 1 {
+	if targetCurrent < minCurrent && (phases == 0 || phases == 3) && lp.activePhases > 1 {
 		lp.log.DEBUG.Printf("available power below %dp min threshold of %.0fW", lp.activePhases, float64(lp.activePhases)*Voltage*minCurrent)
 
 		if lp.phaseTimer.IsZero() {
@@ -899,16 +1035,13 @@ func (lp *LoadPoint) pvScalePhases(availablePower, minCurrent, maxCurrent float6
 			lp.phaseTimer = lp.clock.Now()
 		}
 
+		lp.publishTimer(phaseTimer, lp.Disable.Delay, phaseScale1p)
+
 		elapsed := lp.clock.Since(lp.phaseTimer)
 		if elapsed >= lp.Disable.Delay {
 			lp.log.DEBUG.Println("phase disable timer elapsed")
 			if err := lp.scalePhases(1); err == nil {
 				lp.log.DEBUG.Printf("switched phases: 1p @ %.0fW", availablePower)
-
-				// if charging is disabled, current detection will not switch active phases to 1p
-				// make sure we can start charging by assuming 1p during next cycle
-				lp.activePhases = 1
-
 				return true
 			} else {
 				lp.log.ERROR.Printf("switch phases: %v", err)
@@ -920,13 +1053,15 @@ func (lp *LoadPoint) pvScalePhases(availablePower, minCurrent, maxCurrent float6
 	}
 
 	// scale up phases
-	if min3pCurrent := powerToCurrent(availablePower, 3); min3pCurrent >= minCurrent && phases == 1 {
+	if min3pCurrent := powerToCurrent(availablePower, 3); min3pCurrent >= minCurrent && (phases == 0 || phases == 1) {
 		lp.log.DEBUG.Printf("available power above 3p min threshold of %.0fW", 3*Voltage*minCurrent)
 
 		if lp.phaseTimer.IsZero() {
 			lp.log.DEBUG.Printf("start phase enable timer: %v", lp.Enable.Delay)
 			lp.phaseTimer = lp.clock.Now()
 		}
+
+		lp.publishTimer(phaseTimer, lp.Disable.Delay, phaseScale3p)
 
 		elapsed := lp.clock.Since(lp.phaseTimer)
 		if elapsed >= lp.Disable.Delay {
@@ -947,9 +1082,32 @@ func (lp *LoadPoint) pvScalePhases(availablePower, minCurrent, maxCurrent float6
 	if !waiting && !lp.phaseTimer.IsZero() {
 		lp.log.DEBUG.Printf("phase timer reset")
 		lp.phaseTimer = time.Time{}
+
+		lp.publishTimer(phaseTimer, 0, timerInactive)
 	}
 
 	return false
+}
+
+func (lp *LoadPoint) publishTimer(name string, delay time.Duration, action string) {
+	timer := lp.pvTimer
+	if name == phaseTimer {
+		timer = lp.phaseTimer
+	}
+
+	remaining := delay - lp.clock.Since(timer)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	lp.publish(name+"Action", action)
+	lp.publish(name+"Remaining", remaining)
+
+	if action == timerInactive {
+		lp.log.DEBUG.Printf("%s action: %s", name, action)
+	} else {
+		lp.log.DEBUG.Printf("%s action: %s in %v", name, action, remaining.Round(time.Second))
+	}
 }
 
 // pvMaxCurrent calculates the maximum target current for PV mode
@@ -975,8 +1133,8 @@ func (lp *LoadPoint) pvMaxCurrent(mode api.ChargeMode, sitePower float64, batter
 		}
 	}
 
-	// in MinPV mode return at least minCurrent
-	if (mode == api.ModeMinPV || batteryBuffered) && targetCurrent < minCurrent {
+	// in MinPV mode or under special conditions return at least minCurrent
+	if (mode == api.ModeMinPV || batteryBuffered || lp.climateActive()) && targetCurrent < minCurrent {
 		return minCurrent
 	}
 
@@ -986,9 +1144,11 @@ func (lp *LoadPoint) pvMaxCurrent(mode api.ChargeMode, sitePower float64, batter
 			lp.log.DEBUG.Printf("site power %.0fW >= disable threshold %.0fW", sitePower, lp.Disable.Threshold)
 
 			if lp.pvTimer.IsZero() {
-				lp.log.DEBUG.Printf("start pv disable timer: %v", lp.Disable.Delay)
+				lp.log.DEBUG.Printf("pv disable timer start: %v", lp.Disable.Delay)
 				lp.pvTimer = lp.clock.Now()
 			}
+
+			lp.publishTimer(pvTimer, lp.Disable.Delay, pvDisable)
 
 			elapsed := lp.clock.Since(lp.pvTimer)
 			if elapsed >= lp.Disable.Delay {
@@ -996,14 +1156,16 @@ func (lp *LoadPoint) pvMaxCurrent(mode api.ChargeMode, sitePower float64, batter
 				return 0
 			}
 
-			lp.log.DEBUG.Printf("pv disable timer remaining: %v", (lp.Disable.Delay - elapsed).Round(time.Second))
+			// suppress duplicate log message after timer started
+			if elapsed > time.Second {
+				lp.log.DEBUG.Printf("pv disable timer remaining: %v", (lp.Disable.Delay - elapsed).Round(time.Second))
+			}
 		} else {
 			// reset timer
-			lp.log.DEBUG.Printf("reset pv disable timer: %v", lp.Disable.Delay)
-			lp.pvTimer = lp.clock.Now()
+			lp.resetPVTimerIfRunning("disable")
 		}
 
-		lp.log.DEBUG.Println("pv enable timer: keep enabled")
+		// lp.log.DEBUG.Println("pv disable timer: keep enabled")
 		return minCurrent
 	}
 
@@ -1014,9 +1176,11 @@ func (lp *LoadPoint) pvMaxCurrent(mode api.ChargeMode, sitePower float64, batter
 			lp.log.DEBUG.Printf("site power %.0fW < enable threshold %.0fW", sitePower, lp.Enable.Threshold)
 
 			if lp.pvTimer.IsZero() {
-				lp.log.DEBUG.Printf("start pv enable timer: %v", lp.Enable.Delay)
+				lp.log.DEBUG.Printf("pv enable timer start: %v", lp.Enable.Delay)
 				lp.pvTimer = lp.clock.Now()
 			}
+
+			lp.publishTimer(pvTimer, lp.Enable.Delay, pvEnable)
 
 			elapsed := lp.clock.Since(lp.pvTimer)
 			if elapsed >= lp.Enable.Delay {
@@ -1024,22 +1188,21 @@ func (lp *LoadPoint) pvMaxCurrent(mode api.ChargeMode, sitePower float64, batter
 				return minCurrent
 			}
 
-			lp.log.DEBUG.Printf("pv enable timer remaining: %v", (lp.Enable.Delay - elapsed).Round(time.Second))
+			// suppress duplicate log message after timer started
+			if elapsed > time.Second {
+				lp.log.DEBUG.Printf("pv enable timer remaining: %v", (lp.Enable.Delay - elapsed).Round(time.Second))
+			}
 		} else {
 			// reset timer
-			lp.log.DEBUG.Printf("reset pv enable timer: %v", lp.Enable.Delay)
-			lp.pvTimer = lp.clock.Now()
+			lp.resetPVTimerIfRunning("enable")
 		}
 
-		lp.log.DEBUG.Println("pv enable timer: keep disabled")
+		// lp.log.DEBUG.Println("pv enable timer: keep disabled")
 		return 0
 	}
 
 	// reset timer to disabled state
-	if !lp.pvTimer.IsZero() {
-		lp.log.DEBUG.Printf("pv timer reset")
-		lp.pvTimer = time.Time{}
-	}
+	lp.resetPVTimerIfRunning()
 
 	// cap at maximum current
 	targetCurrent = math.Min(targetCurrent, maxCurrent)
@@ -1059,6 +1222,11 @@ func (lp *LoadPoint) updateChargePower() {
 		lp.log.DEBUG.Printf("charge power: %.0fW", value)
 		lp.publish("chargePower", value)
 
+		// use -1 for https://github.com/evcc-io/evcc/issues/2153
+		if lp.chargePower < -1 {
+			lp.log.WARN.Printf("charge power must not be negative: %.0f", lp.chargePower)
+		}
+
 		return nil
 	}, retryOptions...)
 
@@ -1072,10 +1240,11 @@ func (lp *LoadPoint) updateChargeCurrents() {
 	lp.chargeCurrents = nil
 	phaseMeter, ok := lp.chargeMeter.(api.MeterCurrent)
 	if !ok {
-		// guess active phases from power consumption
-		// assumes that chargePower has been updated before
+		// Guess active phases from power consumption. Assumes that chargePower has been
+		// updated before. Discussion in https://github.com/evcc-io/evcc/issues/2146 and
+		// https://github.com/evcc-io/evcc/issues/2177
 		if lp.charging() && lp.chargeCurrent > 0 {
-			phases := int(math.Round(lp.chargePower / Voltage / lp.chargeCurrent))
+			phases := int(math.Ceil(lp.chargePower/Voltage/lp.chargeCurrent - 0.05))
 			if phases >= 1 && phases <= 3 {
 				lp.activePhases = phases
 				lp.log.DEBUG.Printf("detected phases: %dp (%.1fA @ %.0fW)", lp.activePhases, lp.chargeCurrent, lp.chargePower)
@@ -1167,7 +1336,7 @@ func (lp *LoadPoint) publishSoCAndRange() {
 		if err == nil {
 			lp.vehicleSoc = math.Trunc(f)
 			lp.log.DEBUG.Printf("vehicle soc: %.0f%%", lp.vehicleSoc)
-			lp.publish("vehicleSoc", lp.vehicleSoc)
+			lp.publish("vehicleSoC", lp.vehicleSoc)
 
 			if lp.charging() {
 				lp.setRemainingDuration(lp.socEstimator.RemainingChargeDuration(lp.chargePower, lp.SoC.Target))
@@ -1176,6 +1345,26 @@ func (lp *LoadPoint) publishSoCAndRange() {
 			}
 
 			lp.setRemainingEnergy(1e3 * lp.socEstimator.RemainingChargeEnergy(lp.SoC.Target))
+
+			// range
+			if vs, ok := lp.vehicle.(api.VehicleRange); ok {
+				if rng, err := vs.Range(); err == nil {
+					lp.log.DEBUG.Printf("vehicle range: %vkm", rng)
+					lp.publish("vehicleRange", rng)
+				}
+			}
+
+			// odometer
+			// TODO read only once after connect
+			if vs, ok := lp.vehicle.(api.VehicleOdometer); ok {
+				if odo, err := vs.Odometer(); err == nil {
+					lp.log.DEBUG.Printf("vehicle odometer: %.0fkm", odo)
+					lp.publish("vehicleOdometer", odo)
+				}
+			}
+
+			// trigger message after variables are updated
+			lp.bus.Publish(evVehicleSoC, f)
 		} else {
 			if errors.Is(err, api.ErrMustRetry) {
 				lp.socUpdated = time.Time{}
@@ -1184,24 +1373,7 @@ func (lp *LoadPoint) publishSoCAndRange() {
 			}
 		}
 
-		// range
-		if vs, ok := lp.vehicle.(api.VehicleRange); ok {
-			if rng, err := vs.Range(); err == nil {
-				lp.log.DEBUG.Printf("vehicle range: %vkm", rng)
-				lp.publish("range", rng)
-			}
-		}
-
 		return
-	}
-
-	// reset if poll: connected/charging and not connected
-	if lp.SoC.Poll.Mode != pollAlways && !lp.connected() {
-		lp.publish("vehicleSoc", -1)
-		lp.publish("chargeRemainingDuration", time.Duration(-1))
-
-		// range
-		lp.publish("range", -1)
 	}
 }
 
@@ -1220,6 +1392,9 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 
 	// update progress and soc before status is updated
 	lp.publishChargeProgress()
+
+	// publish providerLogins
+	lp.publishProviderLogins()
 
 	// read and publish status
 	if err := lp.updateChargerStatus(); err != nil {
@@ -1242,9 +1417,6 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 		}
 	}
 
-	// odometer etc, if active
-	lp.runTasks()
-
 	// publish soc after updating charger status to make sure
 	// initial update of connected state matches charger status
 	lp.publishSoCAndRange()
@@ -1257,6 +1429,9 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 
 	// track if remote disabled is actually active
 	remoteDisabled := loadpoint.RemoteEnable
+
+	// reset detection if soc timer needs be deactivated after evaluating the loading strategy
+	lp.socTimer.MustValidateDemand()
 
 	// execute loading strategy
 	switch {
@@ -1297,17 +1472,20 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 		}
 
 	// target charging
-	case lp.socTimer.DemandActive() && false:
-		targetCurrent := lp.socTimer.Handle()
-		err = lp.setLimit(targetCurrent, true)
+	case lp.socTimer.DemandActive():
+		// 3p if available
+		if err = lp.scalePhasesIfAvailable(3); err == nil {
+			targetCurrent := lp.socTimer.Handle()
+			err = lp.setLimit(targetCurrent, true)
+		}
 
 	case mode == api.ModeMinPV || mode == api.ModePV:
 		targetCurrent := lp.pvMaxCurrent(mode, sitePower, batteryBuffered)
-		lp.log.DEBUG.Printf("pv max charge current: %.3gA", targetCurrent)
 
 		var required bool // false
 		if targetCurrent == 0 && lp.climateActive() {
-			targetCurrent = lp.GetMaxCurrent()
+			lp.log.DEBUG.Println("climater active")
+			targetCurrent = lp.GetMinCurrent()
 			required = true
 		}
 
@@ -1328,12 +1506,32 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 		err = lp.setLimit(targetCurrent, required)
 	}
 
+	// stop an active target charging session if not currently evaluated
+	if !lp.socTimer.DemandValidated() {
+		lp.socTimer.Stop()
+	}
+
 	// effective disabled status
 	if remoteDisabled != loadpoint.RemoteEnable {
 		lp.publish("remoteDisabled", remoteDisabled)
 	}
 
-	if err != nil {
+	// read and publish meters after settings are applied
+	if err == nil {
+		time.Sleep(settleDuration)
+		lp.updateChargePower()
+		lp.updateChargeCurrents()
+	} else {
 		lp.log.ERROR.Println(err)
+	}
+}
+
+func (lp *LoadPoint) publishProviderLogins() {
+	for _, vehicle := range lp.vehicles {
+		if provider, ok := vehicle.(api.ProviderLogin); ok {
+			lp.publish("vehicleProviderLoggedIn", provider.LoggedIn())
+			lp.publish("vehicleProviderLoginPath", provider.LoginPath())
+			lp.publish("vehicleProviderLogoutPath", provider.LogoutPath())
+		}
 	}
 }

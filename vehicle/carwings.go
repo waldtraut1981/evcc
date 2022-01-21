@@ -2,9 +2,9 @@ package vehicle
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	carwingsRequestTimeout = 90 * time.Second
 	carwingsStatusExpiry   = 5 * time.Minute // if returned status value is older, evcc will init refresh
 	carwingsRefreshTimeout = 2 * time.Minute // timeout to get status after refresh
 )
@@ -23,7 +24,6 @@ const (
 // CarWings is an api.Vehicle implementation for CarWings cars
 type CarWings struct {
 	*embed
-	wg             sync.WaitGroup
 	user, password string
 	session        *carwings.Session
 	statusG        func() (interface{}, error)
@@ -52,20 +52,19 @@ func NewCarWingsFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	}
 
 	if cc.User == "" || cc.Password == "" {
-		return nil, errors.New("missing credentials")
+		return nil, api.ErrMissingCredentials
 	}
 
-	// http client with high dial/handshake timeout
-	const timeout = 90 * time.Second
-	log := util.NewLogger("carwings")
+	log := util.NewLogger("carwings").Redact(cc.User, cc.Password, cc.VIN)
 
+	// http client with high dial/handshake timeout
 	transport := request.NewTripper(log, &http.Transport{
 		Proxy: http.ProxyFromEnvironment, // default
 		DialContext: (&net.Dialer{
-			Timeout:   timeout,
+			Timeout:   carwingsRequestTimeout,
 			KeepAlive: 30 * time.Second, // default
 		}).DialContext,
-		TLSHandshakeTimeout:   timeout,
+		TLSHandshakeTimeout:   carwingsRequestTimeout,
 		ForceAttemptHTTP2:     true,             // default
 		MaxIdleConns:          100,              // default
 		IdleConnTimeout:       90 * time.Second, // default
@@ -73,7 +72,7 @@ func NewCarWingsFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	})
 
 	carwings.Client = &http.Client{
-		Timeout:   timeout,
+		Timeout:   carwingsRequestTimeout,
 		Transport: transport,
 	}
 
@@ -88,20 +87,15 @@ func NewCarWingsFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	}
 
 	// initial connect
-	v.wg.Add(1)
-	go func() {
-		if err := v.session.Connect(v.user, v.password); err != nil {
-			log.ERROR.Println("login failed:", err)
-		}
-		v.wg.Done()
-	}()
+	if err := v.session.Connect(v.user, v.password); err != nil {
+		return nil, fmt.Errorf("login failed: %w", err)
+	}
 
 	v.statusG = provider.NewCached(func() (interface{}, error) {
 		return v.status()
 	}, cc.Cache).InterfaceGetter()
 
 	v.climateG = provider.NewCached(func() (interface{}, error) {
-		v.wg.Wait() // initial connect
 		return v.session.ClimateControlStatus()
 	}, cc.Cache).InterfaceGetter()
 
@@ -110,8 +104,7 @@ func NewCarWingsFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 
 // connectIfRequired will return ErrMustRetry if ErrNotLoggedIn error could be resolved
 func (v *CarWings) connectIfRequired(err error) error {
-	if err == carwings.ErrNotLoggedIn || err.Error() == "received status code 404" {
-		v.wg.Wait() // initial connect
+	if errors.Is(err, carwings.ErrNotLoggedIn) || err.Error() == "received status code 404" {
 		if err = v.session.Connect(v.user, v.password); err == nil {
 			err = api.ErrMustRetry
 		}
@@ -120,8 +113,6 @@ func (v *CarWings) connectIfRequired(err error) error {
 }
 
 func (v *CarWings) status() (interface{}, error) {
-	v.wg.Wait() // initial connect
-
 	// api result is stale
 	if v.refreshKey != "" {
 		if err := v.refreshResult(); err != nil {

@@ -1,8 +1,17 @@
 package api
 
-import "time"
+import (
+	"fmt"
+	"net/http"
+	"reflect"
+	"strings"
+	"time"
 
-//go:generate mockgen -package mock -destination ../mock/mock_api.go github.com/evcc-io/evcc/api Charger,ChargeState,ChargePhases,Identifier,Meter,MeterEnergy,Vehicle,ChargeRater,Battery
+	"github.com/fatih/structs"
+	"github.com/gorilla/mux"
+)
+
+//go:generate mockgen -package mock -destination ../mock/mock_api.go github.com/evcc-io/evcc/api Charger,ChargeState,ChargePhases,Identifier,Meter,MeterEnergy,Vehicle,VehiclePhases,ChargeRater,Battery
 
 // ChargeMode are charge modes modeled after OpenWB
 type ChargeMode string
@@ -38,6 +47,27 @@ const (
 // String implements Stringer
 func (c ChargeStatus) String() string {
 	return string(c)
+}
+
+// ActionConfig defines an action to take on event
+type ActionConfig struct {
+	Mode       *ChargeMode `mapstructure:"mode,omitempty"`       // Charge Mode
+	MinCurrent *float64    `mapstructure:"minCurrent,omitempty"` // Minimum Current
+	MaxCurrent *float64    `mapstructure:"maxCurrent,omitempty"` // Maximum Current
+	MinSoC     *int        `mapstructure:"minSoC,omitempty"`     // Minimum SoC
+	TargetSoC  *int        `mapstructure:"targetSoC,omitempty"`  // Target SoC
+}
+
+// String implements Stringer and returns the ActionConfig as comma-separated key:value string
+func (a ActionConfig) String() string {
+	var s []string
+	for k, v := range structs.Map(a) {
+		val := reflect.ValueOf(v)
+		if v != nil && !val.IsNil() {
+			s = append(s, fmt.Sprintf("%s:%v", k, val.Elem()))
+		}
+	}
+	return strings.Join(s, ", ")
 }
 
 // Meter is able to provide current power in W
@@ -103,12 +133,18 @@ type Identifier interface {
 	Identify() (string, error)
 }
 
+// Authorizer authorizes a charging session by supplying RFID credentials
+type Authorizer interface {
+	Authorize(key string) error
+}
+
 // Vehicle represents the EV and it's battery
 type Vehicle interface {
 	Battery
-	Identifier
 	Title() string
 	Capacity() int64
+	Identifiers() []string
+	OnIdentified() ActionConfig
 }
 
 // VehicleFinishTimer provides estimated charge cycle finish time
@@ -131,6 +167,16 @@ type VehicleOdometer interface {
 	Odometer() (float64, error)
 }
 
+// VehiclePosition returns the vehicles position in latitude and longitude
+type VehiclePosition interface {
+	Position() (float64, float64, error)
+}
+
+// VehiclePhases returns the number of supported phases
+type VehiclePhases interface {
+	Phases() int
+}
+
 // VehicleStartCharge starts the charging session on the vehicle side
 type VehicleStartCharge interface {
 	StartCharge() error
@@ -142,5 +188,33 @@ type VehicleStopCharge interface {
 }
 
 type Tariff interface {
-	IsCheap() bool
+	IsCheap() (bool, error)
+	CurrentPrice() (float64, error) // EUR/kWh, CHF/kWh, ...
+}
+
+type WebController interface {
+	WebControl(*mux.Router)
+}
+
+type Callback struct {
+	Path    string
+	Handler RedirectHandlerFunc
+}
+
+// RedirectHandlerFunc should return an http.HandlerFunc responding with an http.Redirect(..., redirectURi, ...)
+type RedirectHandlerFunc func(redirectURI string) http.HandlerFunc
+type ProviderLogin interface {
+	SetBasePath(basePath string)
+
+	// Provides ....
+	Callback() Callback
+	SetOAuthCallbackURI(uri string)
+
+	LoggedIn() bool
+
+	LoginPath() string
+	LoginHandler() http.HandlerFunc
+
+	LogoutPath() string
+	LogoutHandler() http.HandlerFunc
 }

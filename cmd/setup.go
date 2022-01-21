@@ -24,13 +24,16 @@ import (
 	"github.com/evcc-io/evcc/util/pipe"
 	"github.com/evcc-io/evcc/util/sponsor"
 	"github.com/spf13/viper"
+	"golang.org/x/text/currency"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func init() {
 	rand.Seed(time.Now().UnixNano())
 }
 
-var cp = &ConfigProvider{}
+var cp = new(ConfigProvider)
 
 func loadConfigFile(cfgFile string) (conf config, err error) {
 	if cfgFile != "" {
@@ -89,7 +92,12 @@ func configureSponsorship(token string) error {
 	}
 
 	if err != nil {
-		err = fmt.Errorf("sponsortoken: %w", err)
+		if s, ok := status.FromError(err); ok && s.Code() != codes.Unknown {
+			sponsor.Subject = "sponsorship unavailable"
+			err = nil
+		} else {
+			err = fmt.Errorf("sponsortoken: %w", err)
+		}
 	}
 
 	return err
@@ -107,12 +115,13 @@ func configureDatabase(conf server.InfluxConfig, loadPoints []loadpoint.API, in 
 	)
 
 	// eliminate duplicate values
-	dedupe := pipe.NewDeduplicator(30*time.Minute, "vehicleSoc")
+	dedupe := pipe.NewDeduplicator(30*time.Minute, "vehicleCapacity", "vehicleSoC", "vehicleRange", "vehicleOdometer", "chargedEnergy", "chargeRemainingEnergy")
 	in = dedupe.Pipe(in)
 
 	// reduce number of values written to influx
-	limiter := pipe.NewLimiter(5 * time.Second)
-	in = limiter.Pipe(in)
+	// TODO this breaks writing vehicleRange as its re-writting in short interval
+	// limiter := pipe.NewLimiter(5 * time.Second)
+	// in = limiter.Pipe(in)
 
 	go influx.Run(loadPoints, in)
 }
@@ -120,13 +129,9 @@ func configureDatabase(conf server.InfluxConfig, loadPoints []loadpoint.API, in 
 // setup mqtt
 func configureMQTT(conf mqttConfig) error {
 	log := util.NewLogger("mqtt")
-	clientID := conf.ClientID
-	if clientID == "" {
-		clientID = mqtt.ClientID()
-	}
 
 	var err error
-	mqtt.Instance, err = mqtt.RegisteredClient(log, conf.Broker, conf.User, conf.Password, clientID, 1, func(options *paho.ClientOptions) {
+	mqtt.Instance, err = mqtt.RegisteredClient(log, conf.Broker, conf.User, conf.Password, conf.ClientID, 1, func(options *paho.ClientOptions) {
 		topic := fmt.Sprintf("%s/status", conf.RootTopic())
 		options.SetWill(topic, "offline", 1, true)
 	})
@@ -146,8 +151,8 @@ func configureJavascript(conf map[string]interface{}) error {
 }
 
 // setup HEMS
-func configureHEMS(conf typedConfig, site *core.Site, cache *util.Cache, httpd *server.HTTPd) hems.HEMS {
-	hems, err := hems.NewFromConfig(conf.Type, conf.Other, site, cache, httpd)
+func configureHEMS(conf typedConfig, site *core.Site, httpd *server.HTTPd) hems.HEMS {
+	hems, err := hems.NewFromConfig(conf.Type, conf.Other, site, httpd)
 	if err != nil {
 		log.FATAL.Fatalf("failed configuring hems: %v", err)
 	}
@@ -183,16 +188,30 @@ func configureMessengers(conf messagingConfig, cache *util.Cache) chan push.Even
 	return notificationChan
 }
 
-func configureTariffs(conf tariffConfig) (t api.Tariff, err error) {
+func configureTariffs(conf tariffConfig) (tariff.Tariffs, error) {
+	var grid, feedin api.Tariff
+	var currencyCode currency.Unit = currency.EUR
+	var err error
+
+	if conf.Currency != "" {
+		currencyCode = currency.MustParseISO(conf.Currency)
+	}
+
 	if conf.Grid.Type != "" {
-		t, err = tariff.NewFromConfig(conf.Grid.Type, conf.Grid.Other)
+		grid, err = tariff.NewFromConfig(conf.Grid.Type, conf.Grid.Other)
+	}
+
+	if err == nil && conf.FeedIn.Type != "" {
+		feedin, err = tariff.NewFromConfig(conf.FeedIn.Type, conf.FeedIn.Other)
 	}
 
 	if err != nil {
 		err = fmt.Errorf("failed configuring tariff: %w", err)
 	}
 
-	return t, err
+	tariffs := tariff.NewTariffs(currencyCode, grid, feedin)
+
+	return *tariffs, err
 }
 
 func configureSiteAndLoadpoints(conf config) (site *core.Site, err error) {
@@ -200,21 +219,21 @@ func configureSiteAndLoadpoints(conf config) (site *core.Site, err error) {
 		var loadPoints []*core.LoadPoint
 		loadPoints, err = configureLoadPoints(conf, cp)
 
-		var tariff api.Tariff
+		var tariffs tariff.Tariffs
 		if err == nil {
-			tariff, err = configureTariffs(conf.Tariffs)
+			tariffs, err = configureTariffs(conf.Tariffs)
 		}
 
 		if err == nil {
-			site, err = configureSite(conf.Site, cp, loadPoints, tariff)
+			site, err = configureSite(conf.Site, cp, loadPoints, tariffs)
 		}
 	}
 
 	return site, err
 }
 
-func configureSite(conf map[string]interface{}, cp *ConfigProvider, loadPoints []*core.LoadPoint, tariff api.Tariff) (*core.Site, error) {
-	site, err := core.NewSiteFromConfig(log, cp, conf, loadPoints, tariff)
+func configureSite(conf map[string]interface{}, cp *ConfigProvider, loadPoints []*core.LoadPoint, tariffs tariff.Tariffs) (*core.Site, error) {
+	site, err := core.NewSiteFromConfig(log, cp, conf, loadPoints, tariffs)
 	if err != nil {
 		return nil, fmt.Errorf("failed configuring site: %w", err)
 	}

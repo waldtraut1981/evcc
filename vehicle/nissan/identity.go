@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/avast/retry-go/v3"
+	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/oauth"
 	"github.com/evcc-io/evcc/util/request"
@@ -36,7 +36,6 @@ func (v *Identity) Login(user, password string) error {
 
 	var nToken Token
 	var realm string
-	var resp *http.Response
 	var code string
 
 	if err == nil {
@@ -55,22 +54,29 @@ func (v *Identity) Login(user, password string) error {
 		}
 
 		// https://github.com/Tobiaswk/dartnissanconnect/commit/7d28dd5461aaed3e46b5be0c9fd58887e1e0cd0b
-		err = retry.Do(func() error {
-			req, err = request.New(http.MethodPost, uri, request.MarshalJSON(res), map[string]string{
-				"Accept-Api-Version": APIVersion,
-				"X-Username":         "anonymous",
-				"X-Password":         "anonymous",
-				"Content-type":       "application/json",
-				"Accept":             "application/json",
-			})
-
-			if err == nil {
-				err = v.DoJSON(req, &nToken)
-				realm = strings.Trim(nToken.Realm, "/")
+		if err == nil {
+			err = api.ErrNotAvailable // not nil
+			for attempt := 1; attempt <= 10 && err != nil; attempt++ {
+				req, err = request.New(http.MethodPost, uri, request.MarshalJSON(res), map[string]string{
+					"Accept-Api-Version": APIVersion,
+					"X-Username":         "anonymous",
+					"X-Password":         "anonymous",
+					"Content-type":       "application/json",
+					"Accept":             "application/json",
+				})
+				if err == nil {
+					if err = v.DoJSON(req, &nToken); err != nil && !nToken.SessionExpired() {
+						break
+					}
+				}
 			}
 
-			return err
-		}, retry.Attempts(10), retry.LastErrorOnly(true))
+			if errT := nToken.Error(); err != nil && errT != nil {
+				err = errT
+			}
+
+			realm = strings.Trim(nToken.Realm, "/")
+		}
 	}
 
 	if err == nil {
@@ -88,20 +94,14 @@ func (v *Identity) Login(user, password string) error {
 		})
 
 		if err == nil {
-			v.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
-			resp, err = v.Do(req)
-			v.CheckRedirect = nil
+			var param request.InterceptResult
+			v.Client.CheckRedirect, param = request.InterceptRedirect("code", true)
 
-			if err == nil {
-				resp.Body.Close()
-
-				var location *url.URL
-				if location, err = url.Parse(resp.Header.Get("Location")); err == nil {
-					if code = location.Query().Get("code"); code == "" {
-						err = fmt.Errorf("missing auth code: %v", location)
-					}
-				}
+			if _, err = v.Do(req); err == nil {
+				code, err = param()
 			}
+
+			v.CheckRedirect = nil
 		}
 	}
 

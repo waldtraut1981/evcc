@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/dustin/go-humanize"
@@ -12,6 +15,7 @@ import (
 	"github.com/evcc-io/evcc/push"
 	"github.com/evcc-io/evcc/server"
 	"github.com/evcc-io/evcc/vehicle"
+	"github.com/evcc-io/evcc/vehicle/wrapper"
 )
 
 type config struct {
@@ -64,7 +68,9 @@ type messagingConfig struct {
 }
 
 type tariffConfig struct {
-	Grid typedConfig
+	Currency string
+	Grid     typedConfig
+	FeedIn   typedConfig
 }
 
 // ConfigProvider provides configuration items
@@ -72,11 +78,24 @@ type ConfigProvider struct {
 	meters   map[string]api.Meter
 	chargers map[string]api.Charger
 	vehicles map[string]api.Vehicle
+	visited  map[string]bool
+}
+
+func (cp *ConfigProvider) TrackVisitors() {
+	cp.visited = make(map[string]bool)
 }
 
 // Meter provides meters by name
 func (cp *ConfigProvider) Meter(name string) api.Meter {
 	if meter, ok := cp.meters[name]; ok {
+		// track duplicate usage https://github.com/evcc-io/evcc/issues/1744
+		if cp.visited != nil {
+			if _, ok := cp.visited[name]; ok {
+				log.FATAL.Fatalf("duplicate meter usage: %s", name)
+			}
+			cp.visited[name] = true
+		}
+
 		return meter
 	}
 	log.FATAL.Fatalf("invalid meter: %s", name)
@@ -167,7 +186,8 @@ func (cp *ConfigProvider) configureVehicles(conf config) error {
 
 		v, err := vehicle.NewFromConfig(cc.Type, cc.Other)
 		if err != nil {
-			return fmt.Errorf("cannot create vehicle '%s': %w", cc.Name, err)
+			// wrap any created errors to prevent fatals
+			v, _ = wrapper.New(v, err)
 		}
 
 		if _, exists := cp.vehicles[cc.Name]; exists {
@@ -178,4 +198,48 @@ func (cp *ConfigProvider) configureVehicles(conf config) error {
 	}
 
 	return nil
+}
+
+// webControl handles implemented routes by devices.
+// for now only api.ProviderLogin related routes
+func (cp *ConfigProvider) webControl(httpd *server.HTTPd) {
+	router := httpd.Router()
+	for _, v := range cp.vehicles {
+		if provider, ok := v.(api.ProviderLogin); ok {
+			title := url.QueryEscape(strings.ToLower(strings.ReplaceAll(v.Title(), " ", "_")))
+
+			basePath := fmt.Sprintf("/auth/vehicles/%s", title)
+			provider.SetBasePath(basePath)
+
+			callback := provider.Callback()
+			callbackURI := fmt.Sprintf("http://%s%s", httpd.Addr, callback.Path)
+			{
+				provider.SetOAuthCallbackURI(callbackURI)
+				log.INFO.Printf("ensure the oauth client redirect/callback is configured for %s: %s", v.Title(), callbackURI)
+			}
+
+			// TODO: how to handle multiple vehicles of the same type
+			//
+			// problems, thoughts and ideas:
+			// conflicting callbacks!
+			// - some unique part has to be added.
+			// - or a general callback handler and the specific vehicle is transported in the state?
+			//   - callback handler needs an option to set the token at the right vehicle and use the right code exchange
+
+			// TODO: what about https?
+			router.
+				Methods(http.MethodGet).
+				Path(callback.Path).
+				HandlerFunc(callback.Handler(fmt.Sprintf("http://%s", httpd.Addr)))
+
+			router.
+				Methods(http.MethodPost).
+				Path(provider.LoginPath()).
+				HandlerFunc(provider.LoginHandler())
+			router.
+				Methods(http.MethodPost).
+				Path(provider.LogoutPath()).
+				HandlerFunc(provider.LogoutHandler())
+		}
+	}
 }

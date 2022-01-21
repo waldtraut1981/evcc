@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/modbus"
+	gridx "github.com/grid-x/modbus"
 	"github.com/volkszaehler/mbmd/meters"
 	"github.com/volkszaehler/mbmd/meters/rs485"
 	"github.com/volkszaehler/mbmd/meters/sunspec"
@@ -35,6 +37,9 @@ func NewModbusFromConfig(other map[string]interface{}) (IntProvider, error) {
 		Register        modbus.Register
 		Value           string
 		Scale           float64
+		Delay           time.Duration
+		ConnectDelay    time.Duration
+		Timeout         time.Duration
 	}{
 		Scale: 1,
 	}
@@ -57,6 +62,26 @@ func NewModbusFromConfig(other map[string]interface{}) (IntProvider, error) {
 	conn, err := modbus.NewConnection(cc.URI, cc.Device, cc.Comset, cc.Baudrate, format, cc.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	// set non-default delay
+	if cc.Delay > 0 {
+		conn.Delay(cc.Delay)
+	}
+
+	// set non-default timeout
+	if cc.Timeout > 0 {
+		conn.Timeout(cc.Timeout)
+	}
+
+	// set non-default delay
+	if cc.Delay > 0 {
+		conn.Delay(cc.Delay)
+	}
+
+	// set non-default connect delay
+	if cc.ConnectDelay > 0 {
+		conn.ConnectDelay(cc.ConnectDelay)
 	}
 
 	log := util.NewLogger("modbus")
@@ -249,7 +274,7 @@ func (m *Modbus) IntSetter(param string) func(int64) error {
 			uval := uint16(int64(m.scale) * val)
 
 			switch op.FuncCode {
-			case modbus.WriteSingleRegister:
+			case gridx.FuncCodeWriteSingleRegister:
 				_, err = m.conn.WriteSingleRegister(op.OpCode, uval)
 			default:
 				err = fmt.Errorf("unknown function code %d", op.FuncCode)

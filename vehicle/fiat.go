@@ -1,9 +1,7 @@
 package vehicle
 
 import (
-	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
@@ -40,14 +38,14 @@ func NewFiatFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	}
 
 	if cc.User == "" || cc.Password == "" {
-		return nil, errors.New("missing credentials")
+		return nil, api.ErrMissingCredentials
 	}
 
 	v := &Fiat{
 		embed: &cc.embed,
 	}
 
-	log := util.NewLogger("fiat")
+	log := util.NewLogger("fiat").Redact(cc.User, cc.Password, cc.VIN)
 	identity := fiat.NewIdentity(log, cc.User, cc.Password)
 
 	err := identity.Login()
@@ -57,14 +55,11 @@ func NewFiatFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 
 	api := fiat.NewAPI(log, identity)
 
-	if cc.VIN == "" {
-		cc.VIN, err = findVehicle(api.Vehicles())
-		if err == nil {
-			log.DEBUG.Printf("found vehicle: %v", cc.VIN)
-		}
-	}
+	cc.VIN, err = ensureVehicle(cc.VIN, api.Vehicles)
 
-	v.Provider = fiat.NewProvider(api, strings.ToUpper(cc.VIN), cc.PIN, cc.Expiry, cc.Cache)
+	if err == nil {
+		v.Provider = fiat.NewProvider(api, cc.VIN, cc.PIN, cc.Expiry, cc.Cache)
+	}
 
 	return v, err
 }

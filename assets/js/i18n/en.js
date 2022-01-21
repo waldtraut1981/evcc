@@ -1,9 +1,15 @@
 export default {
-  header: { support: "Support" },
+  header: {
+    docs: "Documentation",
+    blog: "Blog",
+    github: "GitHub",
+    login: "Logins",
+  },
   footer: {
     version: {
-      version: "version",
-      availableShort: "available",
+      versionShort: "v{installed}",
+      versionLong: "Version {installed}",
+      availableShort: "update",
       availableLong: "update available",
       modalTitle: "Update available",
       modalUpdateStarted: "Evcc will restart after the update..",
@@ -17,11 +23,31 @@ export default {
       modalUpdateStatusStart: "Update started: ",
       modalUpdateStatusFailed: "Update failed: ",
     },
+    savings: {
+      footerShort: "{percent}% solar",
+      footerLong: "{percent}% solar energy",
+      modalTitleShort: "{total} kWh charged · {percent}% solar",
+      modalTitleLong: "{total} kWh charged · {percent}% solar energy",
+      modalChartGrid: "Grid energy {grid} kWh",
+      modalChartSelf: "Solar energy {self} kWh",
+      modalSavingsPrice: "Effective energy price",
+      modalSavingsTotal: "Savings compared to grid",
+      modalExplaination: "Calculation",
+      modalExplainationGrid: "grid tariff {gridPrice}",
+      modalExplainationFeedIn: "feed-in rate {feedInPrice}",
+      modalServerStart: "since server start {since}.",
+      modalNoData: "nothing charged yet",
+      experimentalLabel: "experimental",
+      experimentalText: "Implausible values? Questions about this view? Feel free to join our ",
+    },
     sponsor: {
-      sponsoredShort: "thanks",
-      sponsoredLong: "thanks {sponsor}",
-      supportProjectShort: "support",
-      supportProjectLong: "support the project",
+      thanks: "Thanks for your support, {sponsor}! It helps us with the further development.",
+      confetti: "Ready for some sponsor confetti?",
+      supportUs:
+        "We want to make efficient home charging the standard for as many people as possible. Help us by supporting the further development and maintenance of the project.",
+      sticker: "...or evcc stickers?",
+      confettiPromise: "There will be stickers and digital confetti ;)",
+      becomeSponsor: "Become a GitHub Sponsor",
     },
   },
   notifications: {
@@ -31,7 +57,7 @@ export default {
   main: {
     energyflow: {
       noEnergy: "No Energyflow",
-      houseConsumption: "Consumption",
+      homePower: "Consumption",
       loadpoints: "Loadpoint | Loadpoint | {count} Loadpoints",
       pvProduction: "Production",
       battery: "Battery",
@@ -58,7 +84,7 @@ export default {
     vehicle: {
       fallbackName: "Vehicle",
     },
-    vehicleSoc: {
+    vehicleSoC: {
       disconnected: "disconnected",
       charging: "charging",
       ready: "ready",
@@ -67,11 +93,15 @@ export default {
     vehicleSubline: {
       mincharge: "minimum charging to {soc}%",
     },
+    provider: {
+      login: "login",
+      logout: "logout",
+    },
     targetCharge: {
       inactiveLabel: "Target time",
       activeLabel: "until {time}",
       modalTitle: "Set Target Time",
-      description: "When should the vehicle be chargerd to <strong>{targetSoC}%</strong>?",
+      description: "When should the vehicle be charged to <strong>{targetSoC}%</strong>?",
       today: "today",
       tomorrow: "tomorrow",
       targetIsInThePast: "The chosen time is in the past.",
@@ -88,10 +118,23 @@ export default {
     },
     loadpointDetails: {
       power: "Power",
-      range: "Range",
+      vehicleRange: "Range",
       charged: "Charged",
       duration: "Duration",
       remaining: "Remaining",
+      tooltip: {
+        phases: {
+          scale1p: "Switching to single-phase in {remaining}.",
+          scale3p: "Switching to three-phase in {remaining}.",
+          charge1p: "Single-phase charging.",
+          charge2p: "Two-phase charging.",
+          charge3p: "Three-phase charging.",
+        },
+        pv: {
+          enable: "Solar available. Resume charging in {remaining}.",
+          disable: "Not enough solar. Pause charging in {remaining}.",
+        },
+      },
     },
   },
 };

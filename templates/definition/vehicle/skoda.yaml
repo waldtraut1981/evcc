@@ -1,0 +1,12 @@
+template: skoda
+description: 
+  generic: Skoda (Citigo)
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: capacity
+  default: 10
+render: |
+  type: skoda
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

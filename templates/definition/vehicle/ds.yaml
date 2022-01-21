@@ -1,0 +1,12 @@
+template: ds
+description: 
+  generic: DS
+params:
+- base: vehiclebase
+- base: vehicleidentify
+- name: capacity
+  default: 50
+render: |
+  type: ds
+  {{include "vehicle-base" .}}
+  {{include "vehicle-identify" .}}

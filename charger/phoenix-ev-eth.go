@@ -22,7 +22,7 @@ const (
 
 var phxEVEthRegCurrents = []uint16{114, 116, 118} // current readings
 
-// PhoenixEVEth is an api.ChargeController implementation for Phoenix EV-***-ETH controller models
+// PhoenixEVEth is an api.Charger implementation for Phoenix EV-***-ETH controller models
 // EV-CC-AC1-M3-CBC-RCM-ETH, EV-CC-AC1-M3-CBC-RCM-ETH-3G, EV-CC-AC1-M3-RCM-ETH-XP, EV-CC-AC1-M3-RCM-ETH-3G-XP
 // It uses Modbus TCP to communicate with the controller at modbus client id 255.
 type PhoenixEVEth struct {
@@ -113,7 +113,7 @@ func (wb *PhoenixEVEth) Enabled() (bool, error) {
 func (wb *PhoenixEVEth) Enable(enable bool) error {
 	var u uint16
 	if enable {
-		u = 0xFF00
+		u = modbus.CoilOn
 	}
 
 	_, err := wb.conn.WriteSingleCoil(phxEVEthRegEnable, u)
@@ -143,7 +143,7 @@ func (wb *PhoenixEVEth) ChargingTime() (time.Duration, error) {
 
 	// 2 words, least significant word first
 	secs := uint64(b[3])<<16 | uint64(b[2])<<24 | uint64(b[1]) | uint64(b[0])<<8
-	return time.Duration(time.Duration(secs) * time.Second), nil
+	return time.Duration(secs) * time.Second, nil
 }
 
 // CurrentPower implements the api.Meter interface

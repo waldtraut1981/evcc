@@ -6,7 +6,11 @@
 				{{ $t("main.vehicleSubline.mincharge", { soc: minSoC }) }}
 			</span>
 		</small>
-		<TargetCharge v-bind="targetCharge" @target-time-updated="targetTimeUpdated" v-if="false" />
+		<TargetCharge
+			v-bind="targetCharge"
+			@target-time-updated="setTargetTime"
+			@target-time-removed="removeTargetTime"
+		/>
 	</div>
 </template>
 
@@ -17,27 +21,30 @@ import TargetCharge from "./TargetCharge.vue";
 export default {
 	name: "VehicleSubline",
 	components: { TargetCharge },
+	mixins: [collector],
 	props: {
 		id: Number,
-		vehicleSoc: Number,
+		vehicleSoC: Number,
 		minSoC: Number,
-		timerActive: Boolean,
-		timerSet: Boolean,
 		targetTime: String,
+		targetTimeActive: Boolean,
+		targetTimeHourSuggestion: Number,
 		targetSoC: Number,
 	},
 	computed: {
 		minSoCActive: function () {
-			return this.minSoC > 0 && this.vehicleSoc < this.minSoC;
+			return this.minSoC > 0 && this.vehicleSoC < this.minSoC;
 		},
 		targetCharge: function () {
 			return this.collectProps(TargetCharge);
 		},
 	},
-	mixins: [collector],
 	methods: {
-		targetTimeUpdated: function (targetTime) {
+		setTargetTime: function (targetTime) {
 			this.$emit("target-time-updated", targetTime);
+		},
+		removeTargetTime: function () {
+			this.$emit("target-time-removed");
 		},
 	},
 };

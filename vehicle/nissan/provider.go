@@ -1,39 +1,92 @@
 package nissan
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/provider"
 )
 
+const refreshTimeout = 2 * time.Minute
+
 // Provider is a kamereon provider
 type Provider struct {
-	apiG   func() (interface{}, error)
-	action func(value Action) error
+	statusG     func() (interface{}, error)
+	action      func(value Action) error
+	expiry      time.Duration
+	refreshTime time.Time
 }
 
 // NewProvider returns a kamereon provider
-func NewProvider(api *API, cache time.Duration) *Provider {
-	return &Provider{
-		apiG: provider.NewCached(func() (interface{}, error) {
-			return api.Battery()
-		}, cache).InterfaceGetter(),
+func NewProvider(api *API, vin string, expiry, cache time.Duration) *Provider {
+	impl := &Provider{
 		action: func(value Action) error {
-			_, err := api.ChargingAction(value)
+			_, err := api.ChargingAction(vin, value)
 			return err
 		},
+		expiry: expiry,
 	}
+
+	impl.statusG = provider.NewCached(func() (interface{}, error) {
+		return impl.status(
+			func() (StatusResponse, error) { return api.BatteryStatus(vin) },
+			func() (ActionResponse, error) { return api.RefreshRequest(vin, "RefreshBatteryStatus") },
+		)
+	}, cache).InterfaceGetter()
+
+	return impl
+}
+
+func (v *Provider) status(battery func() (StatusResponse, error), refresh func() (ActionResponse, error)) (StatusResponse, error) {
+	res, err := battery()
+
+	if err == nil {
+		// result valid?
+		if time.Since(res.Attributes.LastUpdateTime.Time) < v.expiry {
+			v.refreshTime = time.Time{}
+			return res, err
+		}
+	}
+
+	// request a refresh, irrespective of a previous error
+	if v.refreshTime.IsZero() {
+		if _, err = refresh(); err == nil {
+			v.refreshTime = time.Now()
+			err = api.ErrMustRetry
+		}
+
+		return res, err
+	}
+
+	// refresh finally expired
+	if time.Since(v.refreshTime) > refreshTimeout {
+		v.refreshTime = time.Time{}
+		if err == nil {
+			err = api.ErrTimeout
+		}
+	} else {
+		if len(res.Errors) > 0 {
+			// extract error code
+			e := res.Errors[0]
+			err = fmt.Errorf("%s: %s", e.Code, e.Detail)
+		} else {
+			// wait for refresh, irrespective of a previous error
+			err = api.ErrMustRetry
+		}
+	}
+
+	return res, err
 }
 
 var _ api.Battery = (*Provider)(nil)
 
 // SoC implements the api.Vehicle interface
 func (v *Provider) SoC() (float64, error) {
-	res, err := v.apiG()
+	res, err := v.statusG()
 
-	if res, ok := res.(Response); err == nil && ok {
-		return float64(res.Data.Attributes.BatteryLevel), nil
+	if res, ok := res.(StatusResponse); err == nil && ok {
+		return float64(res.Attributes.BatteryLevel), nil
 	}
 
 	return 0, err
@@ -45,12 +98,12 @@ var _ api.ChargeState = (*Provider)(nil)
 func (v *Provider) Status() (api.ChargeStatus, error) {
 	status := api.StatusA // disconnected
 
-	res, err := v.apiG()
-	if res, ok := res.(Response); err == nil && ok {
-		if res.Data.Attributes.PlugStatus > 0 {
+	res, err := v.statusG()
+	if res, ok := res.(StatusResponse); err == nil && ok {
+		if res.Attributes.PlugStatus > 0 {
 			status = api.StatusB
 		}
-		if res.Data.Attributes.ChargingStatus > 1.0 {
+		if res.Attributes.ChargeStatus > 1.0 {
 			status = api.StatusC
 		}
 	}
@@ -62,10 +115,10 @@ var _ api.VehicleRange = (*Provider)(nil)
 
 // Range implements the api.VehicleRange interface
 func (v *Provider) Range() (int64, error) {
-	res, err := v.apiG()
+	res, err := v.statusG()
 
-	if res, ok := res.(Response); err == nil && ok {
-		return int64(res.Data.Attributes.RangeHvacOff), nil
+	if res, ok := res.(StatusResponse); err == nil && ok {
+		return int64(res.Attributes.RangeHvacOff), nil
 	}
 
 	return 0, err
@@ -75,16 +128,14 @@ var _ api.VehicleFinishTimer = (*Provider)(nil)
 
 // FinishTime implements the api.VehicleFinishTimer interface
 func (v *Provider) FinishTime() (time.Time, error) {
-	res, err := v.apiG()
+	res, err := v.statusG()
 
-	if res, ok := res.(Response); err == nil && ok {
-		timestamp, err := time.Parse(time.RFC3339, res.Data.Attributes.Timestamp)
-
-		if res.Data.Attributes.RemainingTime == nil {
+	if res, ok := res.(StatusResponse); err == nil && ok {
+		if res.Attributes.RemainingTime == nil {
 			return time.Time{}, api.ErrNotAvailable
 		}
 
-		return timestamp.Add(time.Duration(*res.Data.Attributes.RemainingTime) * time.Minute), err
+		return res.Attributes.LastUpdateTime.Time.Add(time.Duration(*res.Attributes.RemainingTime) * time.Minute), err
 	}
 
 	return time.Time{}, err

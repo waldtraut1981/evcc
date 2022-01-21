@@ -5,18 +5,7 @@
 			@click="toggleDetails"
 		>
 			<Visualization
-				class="
-					col-12
-					offset-md-1
-					col-md-6
-					offset-lg-1
-					col-lg-8
-					offset-xl-1
-					col-xl-6
-					offset-xxl-1
-					col-xl-8
-					order-md-2
-				"
+				class="col-12 offset-md-1 col-md-6 offset-lg-1 col-lg-8 offset-xl-1 col-xl-6 offset-xxl-1 col-xl-8 order-md-2"
 				:showDetails="showDetails"
 				:gridImport="gridImport"
 				:selfConsumption="selfConsumption"
@@ -25,7 +14,7 @@
 				:batteryCharge="batteryCharge"
 				:batteryDischarge="batteryDischarge"
 				:pvProduction="pvProduction"
-				:houseConsumption="houseConsumption"
+				:homePower="homePower"
 				:batterySoC="batterySoC"
 				:valuesInKw="valuesInKw"
 			/>
@@ -40,12 +29,12 @@
 					}}</span>
 					<span class="text-end text-nowrap ps-1">{{ kw(pvProduction) }}</span>
 				</div>
-				<div class="d-flex justify-content-between" data-test-house-consumption>
+				<div class="d-flex justify-content-between" data-test-home-power>
 					<span class="details-icon text-muted"><fa-icon icon="home"></fa-icon></span>
 					<span class="text-nowrap flex-grow-1">{{
-						$t("main.energyflow.houseConsumption")
+						$t("main.energyflow.homePower")
 					}}</span>
-					<span class="text-end text-nowrap ps-1">{{ kw(houseConsumption) }}</span>
+					<span class="text-end text-nowrap ps-1">{{ kw(homePower) }}</span>
 				</div>
 				<div class="d-flex justify-content-between" data-test-loadpoints>
 					<span class="details-icon text-muted"><fa-icon icon="car"></fa-icon></span>
@@ -82,18 +71,8 @@
 				</div>
 			</div>
 			<div
-				class="
-					col-12 col-sm-6
-					offset-md-6
-					col-md-6
-					offset-lg-4
-					col-lg-8
-					d-block d-md-flex
-					order-md-3
-					justify-content-between
-					mt-2
-				"
 				v-if="showDetails"
+				class="col-12 col-sm-6 offset-md-6 col-md-6 offset-lg-4 col-lg-8 d-block d-md-flex order-md-3 justify-content-between mt-2"
 			>
 				<div class="text-nowrap d-flex d-md-block" data-test-grid-import>
 					<span class="color-grid details-icon"><fa-icon icon="square"></fa-icon></span>
@@ -136,9 +115,11 @@ import BatteryIcon from "./BatteryIcon.vue";
 export default {
 	name: "Energyflow",
 	components: { Visualization, BatteryIcon },
+	mixins: [formatter],
 	props: {
 		gridConfigured: Boolean,
 		gridPower: { type: Number, default: 0 },
+		homePower: { type: Number, default: 0 },
 		pvConfigured: Boolean,
 		pvPower: { type: Number, default: 0 },
 		loadpointsPower: { type: Number, default: 0 },
@@ -150,19 +131,12 @@ export default {
 	data: function () {
 		return { showDetails: false };
 	},
-	mixins: [formatter],
 	computed: {
 		gridImport: function () {
 			return Math.max(0, this.gridPower);
 		},
 		pvProduction: function () {
 			return this.pvConfigured ? Math.abs(this.pvPower) : this.pvExport;
-		},
-		pvConsumption: function () {
-			return Math.min(
-				this.pvProduction,
-				this.pvProduction + this.gridPower - this.batteryCharge
-			);
 		},
 		batteryPowerAdjusted: function () {
 			const batteryPowerThreshold = 50;
@@ -174,14 +148,10 @@ export default {
 		batteryCharge: function () {
 			return Math.min(0, this.batteryPowerAdjusted) * -1;
 		},
-		houseConsumption: function () {
-			return Math.max(
-				0,
-				this.gridImport + this.pvConsumption + this.batteryDischarge - this.loadpointsPower
-			);
-		},
 		selfConsumption: function () {
-			return Math.max(0, this.batteryDischarge + this.pvConsumption + this.batteryCharge);
+			const ownPower = this.batteryDischarge + this.pvProduction;
+			const consumption = this.homePower + this.batteryCharge + this.loadpointsPower;
+			return Math.min(ownPower, consumption);
 		},
 		pvExport: function () {
 			return Math.max(0, this.gridPower * -1);
