@@ -15,6 +15,7 @@ import (
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
+	"github.com/evcc-io/evcc/util/transport"
 )
 
 // Bosch is the Bosch BPT-S 5 Hybrid meter
@@ -83,7 +84,7 @@ func NewBosch(uri, usage string) (api.Meter, error) {
 		}
 
 		// ignore the self signed certificate
-		boschInstance.Client.Transport = request.NewTripper(log, request.InsecureTransport())
+		boschInstance.Client.Transport = request.NewTripper(log, transport.Insecure())
 		// create cookie jar to save login tokens
 		boschInstance.Client.Jar, _ = cookiejar.New(nil)
 
