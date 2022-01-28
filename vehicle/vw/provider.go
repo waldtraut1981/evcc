@@ -25,8 +25,24 @@ type Provider struct {
 	rr        func() (RolesRights, error)
 }
 
+var providerInstances map[string]*Provider = make(map[string]*Provider)
+
+func GetProviderFromMap(vin string) *Provider {
+	return providerInstances[vin]
+}
+
+func addProviderToMap(vin string, prov *Provider) {
+	providerInstances[vin] = prov
+}
+
 // NewProvider provides the evcc vehicle api provider
 func NewProvider(api *API, vin string, cache time.Duration) *Provider {
+	existingProvider := GetProviderFromMap(vin)
+
+	if existingProvider != nil {
+		return existingProvider
+	}
+
 	impl := &Provider{
 		chargerG: provider.NewCached(func() (interface{}, error) {
 			return api.Charger(vin)
@@ -47,6 +63,9 @@ func NewProvider(api *API, vin string, cache time.Duration) *Provider {
 			return api.RolesRights(vin)
 		},
 	}
+
+	addProviderToMap(vin, impl)
+
 	return impl
 }
 

@@ -24,6 +24,16 @@ type API struct {
 	statusURI      string
 }
 
+var apiInstances map[*Identity]*API = make(map[*Identity]*API)
+
+func GetApiFromMap(ident *Identity) *API {
+	return apiInstances[ident]
+}
+
+func AddApiToMap(ident *Identity, api *API) {
+	apiInstances[ident] = api
+}
+
 // NewAPI creates a new api client
 func NewAPI(log *util.Logger, ts oauth2.TokenSource, brand, country string) *API {
 	v := &API{

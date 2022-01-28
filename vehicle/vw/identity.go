@@ -31,14 +31,34 @@ type Identity struct {
 	oauth2.TokenSource
 }
 
+var identityInstances map[string]*Identity = make(map[string]*Identity)
+
+func GetIdentityFromMap(user string) *Identity {
+	return identityInstances[user]
+}
+
+func addIdentityToMap(user string, ident *Identity) {
+	identityInstances[user] = ident
+}
+
 func NewIdentity(log *util.Logger, clientID string, query url.Values, user, password string) *Identity {
+	existingIdentity := GetIdentityFromMap(user)
+
+	if existingIdentity != nil {
+		return existingIdentity
+	}
+
 	uri := fmt.Sprintf("%s/oidc/v1/authorize?%s", IdentityURI, query.Encode())
 
-	return &Identity{
+	ident := &Identity{
 		Helper:   request.NewHelper(log),
 		idtp:     NewIDTokenProvider(log, uri, user, password),
 		clientID: clientID,
 	}
+
+	addIdentityToMap(user, ident)
+
+	return ident
 }
 
 func (v *Identity) Login() error {
