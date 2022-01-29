@@ -143,7 +143,7 @@ func (c *VwVirtualCharger) Enable(enable bool) error {
 			c.Logger.DEBUG.Println("stop charge")
 
 			c.ChargeTransition = TransitionToDisabled
-			return c.Provider.StartCharge()
+			return c.Provider.StopCharge()
 		} else {
 			c.Logger.DEBUG.Println("still in transition state to stopped. doing nothing.")
 
