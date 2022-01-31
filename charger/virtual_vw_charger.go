@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	expiry   = 5 * time.Minute  // maximum response age before refresh
-	interval = 15 * time.Minute // refresh interval when charging
+	expiry   = 2 * time.Minute // maximum response age before refresh
+	interval = 2 * time.Minute // refresh interval when charging
 )
 
 type ChargeTransition string
@@ -119,6 +119,14 @@ func (c *VwVirtualCharger) Enabled() (bool, error) {
 	status, err := c.Provider.Status()
 
 	if err == nil {
+		if c.ChargeTransition == TransitionToEnabled {
+			return true, nil
+		}
+
+		if c.ChargeTransition == TransitionToDisabled {
+			return false, nil
+		}
+
 		return status == api.StatusC, nil
 	}
 
@@ -132,6 +140,7 @@ func (c *VwVirtualCharger) Enable(enable bool) error {
 			c.Logger.DEBUG.Println("start charge")
 
 			c.ChargeTransition = TransitionToEnabled
+
 			return c.Provider.StartCharge()
 		} else {
 			c.Logger.DEBUG.Println("still in transition state to starting. doing nothing.")
@@ -160,6 +169,8 @@ func (c *VwVirtualCharger) MaxCurrent(current int64) error {
 
 // Status implements the api.Charger interface
 func (c *VwVirtualCharger) Status() (api.ChargeStatus, error) {
+	//TODO: check car position before state --> is car at home near charger?
+
 	chargeStatus, err := c.Provider.Status()
 
 	if c.ChargeTransition == TransitionToEnabled && chargeStatus == api.StatusC {
