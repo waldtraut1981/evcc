@@ -268,7 +268,7 @@ func (m *Bosch) CurrentPower() (float64, error) {
 		}
 	}
 	if m.usage == "pv" {
-		return -1.0 * m.requestClient.pvLeistungWatt, nil
+		return m.requestClient.pvLeistungWatt, nil
 	}
 	if m.usage == "battery" {
 		if m.requestClient.batterieLadeStrom > 0.0 {
