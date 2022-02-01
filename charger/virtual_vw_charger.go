@@ -119,6 +119,11 @@ func (c *VwVirtualCharger) Enabled() (bool, error) {
 	status, err := c.Provider.Status()
 
 	if err == nil {
+		if status == api.StatusA {
+			c.ChargeTransition = StateReached
+			return false, nil
+		}
+
 		if c.ChargeTransition == TransitionToEnabled {
 			return true, nil
 		}
