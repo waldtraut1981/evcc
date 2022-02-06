@@ -116,23 +116,11 @@ func NewVwVirtual(provider *vw.Provider, log *util.Logger) (*VwVirtualCharger, e
 // Enabled implements the api.Charger interface
 func (c *VwVirtualCharger) Enabled() (bool, error) {
 
-	status, err := c.Provider.Status()
+	status, err := c.Status()
 
 	if err == nil {
-		if status == api.StatusA {
-			c.ChargeTransition = StateReached
-			return false, nil
-		}
-
-		if c.ChargeTransition == TransitionToEnabled {
-			return true, nil
-		}
-
-		if c.ChargeTransition == TransitionToDisabled {
-			return false, nil
-		}
-
-		return status == api.StatusC, nil
+		isCharging := (status == api.StatusC) || (status == api.StatusD)
+		return isCharging, nil
 	}
 
 	return false, nil
@@ -178,14 +166,44 @@ func (c *VwVirtualCharger) Status() (api.ChargeStatus, error) {
 
 	chargeStatus, err := c.Provider.Status()
 
-	if c.ChargeTransition == TransitionToEnabled && chargeStatus == api.StatusC {
-		c.Logger.DEBUG.Println("state enabled reached in API call")
-		c.ChargeTransition = StateReached
-	}
-
-	if c.ChargeTransition == TransitionToDisabled && (chargeStatus == api.StatusB || chargeStatus == api.StatusA) {
-		c.Logger.DEBUG.Println("state disabled reached in API call")
-		c.ChargeTransition = StateReached
+	switch chargeStatus {
+	// Fzg. angeschlossen: nein    Laden aktiv: nein    - Kabel nicht angeschlossen
+	case api.StatusA:
+		{
+			c.ChargeTransition = StateReached
+			break
+		}
+	// Fzg. angeschlossen:   ja    Laden aktiv: nein    - Kabel angeschlossen
+	case api.StatusB:
+		{
+			if c.ChargeTransition == TransitionToDisabled {
+				c.ChargeTransition = StateReached
+			}
+			break
+		}
+	// Fzg. angeschlossen:   ja    Laden aktiv:   ja    - Laden
+	case api.StatusC:
+	// Fzg. angeschlossen:   ja    Laden aktiv:   ja    - Laden mit Lüfter
+	case api.StatusD:
+		{
+			if c.ChargeTransition == TransitionToEnabled {
+				c.ChargeTransition = StateReached
+			}
+			break
+		}
+	// Fzg. angeschlossen:   ja    Laden aktiv: nein    - Fehler (Kurzschluss)
+	case api.StatusE:
+	// Fzg. angeschlossen:   ja    Laden aktiv: nein    - Fehler (Ausfall Wallbox)
+	case api.StatusF:
+		{
+			c.ChargeTransition = StateReached
+			break
+		}
+	default:
+		{
+			c.ChargeTransition = StateReached
+			break
+		}
 	}
 
 	return chargeStatus, err
