@@ -35,7 +35,7 @@ params:
   help:
     de: Kommunikationsparameter für den Adapter
     en: Communication parameter for the adapter
-  default: "8N1"
+  default: 8N1
 - name: host
   description:
     de: IP-Adresse oder Hostname
@@ -101,6 +101,15 @@ params:
     de: Das zeitliche Interval, in welchem Daten vom Fahrzeug neu geladen werden soll
     en: Time interval with when data should be reloaded from the vehicle
   example: 5m
+- name: timeout
+  description:
+    de: Zeitüberschreitung
+    en: Timeout
+  help:
+    de: Akzeptiere keine Daten die älter als dieser Wert ist
+    en: Don't accept values older than this value in seconds
+  example: 30s
+  valuetype: duration
 - name: mode
   description:
     de: Standard-Lademodus, wenn ein Fahrzeug angeschlossen ist

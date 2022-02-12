@@ -136,7 +136,7 @@ func (c *CmdConfigure) processDeviceRequirements(templateItem templates.Template
 	// check if we need to setup an MQTT broker
 	if funk.ContainsString(templateItem.Requirements.EVCC, templates.RequirementMQTT) {
 		if c.configuration.config.MQTT == "" {
-			mqttConfig, err := c.configureMQTT()
+			mqttConfig, err := c.configureMQTT(templateItem)
 			if err != nil {
 				return err
 			}
@@ -161,8 +161,7 @@ func (c *CmdConfigure) processDeviceRequirements(templateItem templates.Template
 				return fmt.Errorf("%s: %s", c.localizedString("Requirements_EEBUS_Cert_Error", nil), err)
 			}
 
-			err = c.configureEEBus(eebusConfig)
-			if err != nil {
+			if err := c.configureEEBus(eebusConfig); err != nil {
 				return err
 			}
 
@@ -170,6 +169,7 @@ func (c *CmdConfigure) processDeviceRequirements(templateItem templates.Template
 			if err != nil {
 				return err
 			}
+
 			c.configuration.config.EEBUS = string(eebusYaml)
 			fmt.Println()
 			fmt.Println("--------------------------------------------")
@@ -209,7 +209,7 @@ func (c *CmdConfigure) askSponsortoken(required bool) error {
 	return nil
 }
 
-func (c *CmdConfigure) configureMQTT() (map[string]interface{}, error) {
+func (c *CmdConfigure) configureMQTT(templateItem templates.Template) (map[string]interface{}, error) {
 	fmt.Println()
 	fmt.Println("-- MQTT Broker ----------------------------")
 
@@ -217,23 +217,27 @@ func (c *CmdConfigure) configureMQTT() (map[string]interface{}, error) {
 
 	for ok := true; ok; {
 		fmt.Println()
+		_, paramHost := templateItem.ConfigDefaults.ParamByName("host")
+		_, paramPort := templateItem.ConfigDefaults.ParamByName("port")
+		_, paramUser := templateItem.ConfigDefaults.ParamByName("user")
+		_, paramPassword := templateItem.ConfigDefaults.ParamByName("password")
 		host := c.askValue(question{
-			label:    c.localizedString("UserFriendly_Host_Name", nil),
+			label:    paramHost.Description.String(c.lang),
 			mask:     false,
 			required: true})
 
 		port := c.askValue(question{
-			label:    c.localizedString("UserFriendly_Port_Name", nil),
+			label:    paramPort.Description.String(c.lang),
 			mask:     false,
 			required: true})
 
 		user := c.askValue(question{
-			label:    c.localizedString("UserFriendly_User_Name", nil),
+			label:    paramUser.Description.String(c.lang),
 			mask:     false,
 			required: false})
 
 		password := c.askValue(question{
-			label:    c.localizedString("UserFriendly_Password_Name", nil),
+			label:    paramPassword.Description.String(c.lang),
 			mask:     true,
 			required: false})
 
@@ -340,23 +344,23 @@ func (c *CmdConfigure) paramChoiceValues(params []templates.Param, name string) 
 // processConfig processes an EVCC configuration item
 // Returns:
 //   a map with param name and values
-func (c *CmdConfigure) processConfig(templateItem templates.Template, deviceCategory DeviceCategory) map[string]interface{} {
+func (c *CmdConfigure) processConfig(templateItem *templates.Template, deviceCategory DeviceCategory) map[string]interface{} {
 	fmt.Println()
 	fmt.Println(c.localizedString("Config_Title", nil))
 	fmt.Println()
 
-	c.processModbusConfig(&templateItem, deviceCategory)
+	c.processModbusConfig(templateItem, deviceCategory)
 
-	return c.processParams(templateItem, templateItem.Params, deviceCategory)
+	return c.processParams(templateItem, deviceCategory)
 }
 
 // process a list of params
-func (c *CmdConfigure) processParams(templateItem templates.Template, params []templates.Param, deviceCategory DeviceCategory) map[string]interface{} {
+func (c *CmdConfigure) processParams(templateItem *templates.Template, deviceCategory DeviceCategory) map[string]interface{} {
 	usageFilter := DeviceCategories[deviceCategory].categoryFilter
 
 	additionalConfig := make(map[string]interface{})
 
-	for _, param := range params {
+	for _, param := range templateItem.Params {
 		if param.Dependencies != nil {
 			valid := true
 			for _, dep := range param.Dependencies {
@@ -507,5 +511,5 @@ func (c *CmdConfigure) processModbusConfig(templateItem *templates.Template, dev
 	// add the interface type specific modbus params
 	templateItem.ModbusParams(choiceTypes[index], values)
 	// Update the modbus default values
-	templateItem.ModbusValues(templates.TemplateRenderModeInstance, values)
+	_ = templateItem.ModbusValues(templates.TemplateRenderModeInstance, true, values)
 }
