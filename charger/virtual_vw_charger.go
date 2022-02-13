@@ -30,6 +30,7 @@ type VwVirtualCharger struct {
 	*vw.Provider // provides the api implementations
 	ChargeTransition
 	*util.Logger
+	callCounterDuringTransistion int
 }
 
 func init() {
@@ -105,9 +106,10 @@ func NewVirtualVwFromConfig(other map[string]interface{}) (api.Charger, error) {
 // NewVwVirtual creates VW virtual charger
 func NewVwVirtual(provider *vw.Provider, log *util.Logger) (*VwVirtualCharger, error) {
 	c := &VwVirtualCharger{
-		Provider:         provider,
-		ChargeTransition: StateReached,
-		Logger:           log,
+		Provider:                     provider,
+		ChargeTransition:             StateReached,
+		Logger:                       log,
+		callCounterDuringTransistion: 0,
 	}
 
 	return c, nil
@@ -121,9 +123,10 @@ func (c *VwVirtualCharger) Enabled() (bool, error) {
 	if err == nil {
 		isCharging := (status == api.StatusC) || (status == api.StatusD)
 		return isCharging, nil
+	} else {
+		c.Logger.ERROR.Println("Error getting status: ", err)
+		return false, err
 	}
-
-	return false, nil
 }
 
 // Enable implements the api.Charger interface
@@ -131,25 +134,47 @@ func (c *VwVirtualCharger) Enable(enable bool) error {
 	if enable {
 		if c.ChargeTransition == StateReached {
 			c.Logger.DEBUG.Println("start charge")
+			c.callCounterDuringTransistion = 0
 
 			c.ChargeTransition = TransitionToEnabled
 
 			return c.Provider.StartCharge()
 		} else {
-			c.Logger.DEBUG.Println("still in transition state to starting. doing nothing.")
+			c.Logger.DEBUG.Println("still in transition state to starting. doing nothing. Call nr. ", c.callCounterDuringTransistion)
 
-			return nil
+			c.callCounterDuringTransistion++
+
+			if c.callCounterDuringTransistion >= 10 {
+				c.callCounterDuringTransistion = 0
+
+				c.Logger.DEBUG.Println("10 tries during waiting. Sending start call again")
+
+				return c.Provider.StartCharge()
+			} else {
+				return nil
+			}
 		}
 	} else {
 		if c.ChargeTransition == StateReached {
 			c.Logger.DEBUG.Println("stop charge")
+			c.callCounterDuringTransistion = 0
 
 			c.ChargeTransition = TransitionToDisabled
 			return c.Provider.StopCharge()
 		} else {
 			c.Logger.DEBUG.Println("still in transition state to stopped. doing nothing.")
 
-			return nil
+			c.callCounterDuringTransistion++
+
+			if c.callCounterDuringTransistion >= 10 {
+				c.callCounterDuringTransistion = 0
+
+				c.Logger.DEBUG.Println("10 tries during waiting. Sending stop call again")
+
+				return c.Provider.StopCharge()
+			} else {
+				return nil
+			}
 		}
 	}
 }
@@ -204,6 +229,10 @@ func (c *VwVirtualCharger) Status() (api.ChargeStatus, error) {
 			c.ChargeTransition = StateReached
 			break
 		}
+	}
+
+	if err != nil {
+		c.Logger.ERROR.Println("Error getting status", err)
 	}
 
 	return chargeStatus, err
