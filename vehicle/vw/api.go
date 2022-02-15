@@ -22,6 +22,7 @@ type API struct {
 	brand, country string
 	baseURI        string
 	statusURI      string
+	logger         *util.Logger
 }
 
 var apiInstances map[*Identity]*API = make(map[*Identity]*API)
@@ -41,6 +42,7 @@ func NewAPI(log *util.Logger, ts oauth2.TokenSource, brand, country string) *API
 		brand:   brand,
 		country: country,
 		baseURI: DefaultBaseURI,
+		logger:  log,
 	}
 
 	v.Client.Transport = &oauth2.Transport{
@@ -53,22 +55,28 @@ func NewAPI(log *util.Logger, ts oauth2.TokenSource, brand, country string) *API
 
 // Vehicles implements the /vehicles response
 func (v *API) Vehicles() ([]string, error) {
+	v.logger.DEBUG.Println("API_CALL: place call Vehicles")
 	var res VehiclesResponse
 	uri := fmt.Sprintf("%s/usermanagement/users/v1/%s/%s/vehicles", v.baseURI, v.brand, v.country)
 	err := v.GetJSON(uri, &res)
 	if err != nil && res.Error != nil {
 		err = res.Error.Error()
+		v.logger.DEBUG.Println("API_CALL: error during Vehicles call: ", err)
+	} else {
+		v.logger.DEBUG.Println("API_CALL: Vehicles answer: ", res.UserVehicles.Vehicle)
 	}
 	return res.UserVehicles.Vehicle, err
 }
 
 // HomeRegion updates the home region for the given vehicle
 func (v *API) HomeRegion(vin string) error {
+	v.logger.DEBUG.Println("API_CALL: place call HomeRegion")
 	var res HomeRegion
 	uri := fmt.Sprintf("%s/cs/vds/v1/vehicles/%s/homeRegion", RegionAPI, vin)
 
 	err := v.GetJSON(uri, &res)
 	if err == nil {
+		v.logger.DEBUG.Println("API_CALL: HomeRegion answer: ", res.HomeRegion)
 		if api := res.HomeRegion.BaseURI.Content; strings.HasPrefix(api, "https://mal-3a.prd.eu.dp.vwg-connect.com") {
 			api = "https://fal" + strings.TrimPrefix(api, "https://mal")
 			api = strings.TrimSuffix(api, "/api") + "/fs-car"
@@ -76,6 +84,7 @@ func (v *API) HomeRegion(vin string) error {
 		}
 	} else if res.Error != nil {
 		err = res.Error.Error()
+		v.logger.DEBUG.Println("API_CALL: error during HomeRegion call: ", err)
 	}
 
 	return err
@@ -83,9 +92,11 @@ func (v *API) HomeRegion(vin string) error {
 
 // RolesRights implements the /rolesrights/operationlist response
 func (v *API) RolesRights(vin string) (RolesRights, error) {
+	v.logger.DEBUG.Println("API_CALL: place call RolesRights")
 	var res RolesRights
 	uri := fmt.Sprintf("%s/rolesrights/operationlist/v3/vehicles/%s", RegionAPI, vin)
 	err := v.GetJSON(uri, &res)
+	v.logger.DEBUG.Println("API_CALL: RolesRights result:", err, res)
 	return res, err
 }
 
@@ -103,6 +114,7 @@ func (v *API) ServiceURI(vin, service string, rr RolesRights) (uri string) {
 
 // Status implements the /status response
 func (v *API) Status(vin string) (StatusResponse, error) {
+	v.logger.DEBUG.Println("API_CALL: place call Status")
 	var res StatusResponse
 	uri := fmt.Sprintf("%s/bs/vsr/v1/vehicles/%s/status", RegionAPI, vin)
 	if v.statusURI != "" {
@@ -118,6 +130,9 @@ func (v *API) Status(vin string) (StatusResponse, error) {
 	req, err := request.New(http.MethodGet, uri, nil, headers)
 	if err == nil {
 		err = v.DoJSON(req, &res)
+		v.logger.DEBUG.Println("API_CALL: result get Status", res)
+	} else {
+		v.logger.DEBUG.Println("API_CALL: error during get Status", err)
 	}
 
 	if _, ok := err.(request.StatusError); ok {
@@ -135,9 +150,13 @@ func (v *API) Status(vin string) (StatusResponse, error) {
 				uri += "status"
 			}
 
+			v.logger.DEBUG.Println("API_CALL: place call Status step 2")
 			if req, err = request.New(http.MethodGet, uri, nil, headers); err == nil {
 				if err = v.DoJSON(req, &res); err == nil {
+					v.logger.DEBUG.Println("API_CALL: result get Status step 2:", res)
 					v.statusURI = uri
+				} else {
+					v.logger.DEBUG.Println("API_CALL: error during get Status step 2 ", err)
 				}
 			}
 		}
@@ -148,28 +167,37 @@ func (v *API) Status(vin string) (StatusResponse, error) {
 
 // Charger implements the /charger response
 func (v *API) Charger(vin string) (ChargerResponse, error) {
+	v.logger.DEBUG.Println("API_CALL: place call Charger")
 	var res ChargerResponse
 	uri := fmt.Sprintf("%s/bs/batterycharge/v1/%s/%s/vehicles/%s/charger", v.baseURI, v.brand, v.country, vin)
 	err := v.GetJSON(uri, &res)
 	if err != nil && res.Error != nil {
 		err = res.Error.Error()
+		v.logger.DEBUG.Println("API_CALL: error call Charger ", err)
+	} else {
+		v.logger.DEBUG.Println("API_CALL: call Charger result ", res)
 	}
 	return res, err
 }
 
 // Climater implements the /climater response
 func (v *API) Climater(vin string) (ClimaterResponse, error) {
+	v.logger.DEBUG.Println("API_CALL: place call Climater")
 	var res ClimaterResponse
 	uri := fmt.Sprintf("%s/bs/climatisation/v1/%s/%s/vehicles/%s/climater", v.baseURI, v.brand, v.country, vin)
 	err := v.GetJSON(uri, &res)
 	if err != nil && res.Error != nil {
 		err = res.Error.Error()
+		v.logger.DEBUG.Println("API_CALL: error call Climater ", err)
+	} else {
+		v.logger.DEBUG.Println("API_CALL: call Climater result ", res)
 	}
 	return res, err
 }
 
 // Position implements the /position response
 func (v *API) Position(vin string) (PositionResponse, error) {
+	v.logger.DEBUG.Println("API_CALL: place call Position")
 	var res PositionResponse
 	uri := fmt.Sprintf("%s/bs/cf/v1/%s/%s/vehicles/%s/position", v.baseURI, v.brand, v.country, vin)
 
@@ -185,6 +213,9 @@ func (v *API) Position(vin string) (PositionResponse, error) {
 
 	if err != nil && res.Error != nil {
 		err = res.Error.Error()
+		v.logger.DEBUG.Println("API_CALL: error call Position ", err)
+	} else {
+		v.logger.DEBUG.Println("API_CALL: call Position result ", res)
 	}
 
 	return res, err
@@ -210,6 +241,7 @@ var actionDefinitions = map[string]actionDefinition{
 
 // Action implements vehicle actions
 func (v *API) Action(vin, action, value string) error {
+	v.logger.DEBUG.Println("API_CALL: place call Action")
 	def := actionDefinitions[action]
 
 	uri := fmt.Sprintf("%s/bs/%s/v1/%s/%s/vehicles/%s/%s", v.baseURI, action, v.brand, v.country, vin, def.appendix)
@@ -223,7 +255,12 @@ func (v *API) Action(vin, action, value string) error {
 		var resp *http.Response
 		if resp, err = v.Do(req); err == nil {
 			resp.Body.Close()
+			v.logger.DEBUG.Println("API_CALL: call Action result ", resp.Body)
+		} else {
+			v.logger.DEBUG.Println("API_CALL: error during call Action ", err)
 		}
+	} else {
+		v.logger.DEBUG.Println("API_CALL: error during call Action ", err)
 	}
 
 	return err
