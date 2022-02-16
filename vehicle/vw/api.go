@@ -2,6 +2,8 @@ package vw
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -254,8 +256,15 @@ func (v *API) Action(vin, action, value string) error {
 	if err == nil {
 		var resp *http.Response
 		if resp, err = v.Do(req); err == nil {
+			v.logger.DEBUG.Println("API_CALL: call Action result code ", resp.StatusCode)
+			bodyBytes, err := io.ReadAll(resp.Body)
+			if err != nil {
+				log.Fatal(err)
+			}
+			bodyString := string(bodyBytes)
+
+			v.logger.DEBUG.Println("API_CALL: call Action result ", bodyString)
 			resp.Body.Close()
-			v.logger.DEBUG.Println("API_CALL: call Action result ", resp.Body)
 		} else {
 			v.logger.DEBUG.Println("API_CALL: error during call Action ", err)
 		}
