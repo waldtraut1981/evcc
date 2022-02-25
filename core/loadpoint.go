@@ -975,7 +975,7 @@ func (lp *LoadPoint) resetPVTimerIfRunning(typ ...string) {
 
 	msg := "pv timer reset"
 	if len(typ) == 1 {
-		msg = fmt.Sprintf("pv %s timer reset", typ)
+		msg = fmt.Sprintf("pv %s timer reset", typ[0])
 	}
 	lp.log.DEBUG.Printf(msg)
 
@@ -1077,6 +1077,11 @@ func (lp *LoadPoint) pvScalePhases(availablePower, minCurrent, maxCurrent float6
 	// observed phase state inconsistency (https://github.com/evcc-io/evcc/issues/1572, https://github.com/evcc-io/evcc/issues/2230)
 	if phases > 0 && phases < lp.activePhases {
 		lp.log.WARN.Printf("ignoring inconsistent phases: %dp < %dp observed active", phases, lp.activePhases)
+
+		// if 3p->1p change is slow and we're no longer charging, we'll correct the observed phases here
+		if lp.GetStatus() == api.StatusB {
+			lp.activePhases = 1
+		}
 	}
 
 	// this can happen the first time for a 1p3p-capable charger, see https://github.com/evcc-io/evcc/issues/2520
@@ -1281,7 +1286,10 @@ func (lp *LoadPoint) updateChargePower() {
 			return err
 		}
 
+		lp.Lock()
 		lp.chargePower = value // update value if no error
+		lp.Unlock()
+
 		lp.log.DEBUG.Printf("charge power: %.0fW", value)
 		lp.publish("chargePower", value)
 
