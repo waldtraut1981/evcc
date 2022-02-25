@@ -41,7 +41,6 @@ func NewInfluxClient(url, token, org, user, password, database string) *Influx {
 	}
 
 	options := influxdb2.DefaultOptions().SetPrecision(time.Second).SetHTTPRequestTimeout(60)
-	options.HTTPRequestTimeout()
 	client := influxdb2.NewClientWithOptions(url, token, options)
 
 	// handle error logging in writer
