@@ -9,7 +9,7 @@ import (
 )
 
 // Timeout is the default request timeout used by the Helper
-var Timeout = 10 * time.Second
+var Timeout = 60 * time.Second
 
 // Helper provides utility primitives
 type Helper struct {
