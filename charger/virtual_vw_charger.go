@@ -197,13 +197,13 @@ func (c *VwVirtualCharger) Status() (api.ChargeStatus, error) {
 	latitude, longitude, err := c.Provider.Position()
 
 	if err == nil {
-		c.Logger.ERROR.Println("Current vehicle position: lat ", latitude, " long ", longitude, " charger location: lat ", c.Latitude, " long ", c.Longitude)
+		c.Logger.DEBUG.Println("Current vehicle position: lat ", latitude, " long ", longitude, " charger location: lat ", c.Latitude, " long ", c.Longitude)
 
 		distance := distance(c.Latitude, c.Longitude, latitude, longitude, "K")
-		c.Logger.ERROR.Println("Distance from vehicle to charger is (km): ", distance)
+		c.Logger.DEBUG.Println("Distance from vehicle to charger is (km): ", distance)
 
 		if distance > 2.0 {
-			c.Logger.ERROR.Println("vehicle is not considred to be home. Setting to fixed status StatusA (not connected)")
+			c.Logger.DEBUG.Println("vehicle is not considred to be home. Setting to fixed status StatusA (not connected)")
 			return api.StatusA, nil
 		}
 	} else {
