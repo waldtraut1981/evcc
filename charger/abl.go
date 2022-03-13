@@ -208,14 +208,14 @@ func (wb *ABLeMH) currents() (float64, float64, float64, error) {
 	var currents []float64
 	for i := 2; i < 5; i++ {
 		u := binary.BigEndian.Uint16(b[2*i:])
-		if u == ablAmpsDisabled {
+		if u == ablAmpsDisabled || u == 1 {
 			u = 0
 		}
 
 		currents = append(currents, float64(u)/10)
 	}
 
-	return currents[0], currents[1], currents[2], nil
+	return currents[2], currents[1], currents[0], nil
 }
 
 var _ api.Diagnosis = (*ABLeMH)(nil)
