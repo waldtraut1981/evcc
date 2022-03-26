@@ -46,6 +46,8 @@ const (
 	minActiveCurrent      = 1.0 // minimum current at which a phase is treated as active
 	vehicleDetectInterval = 3 * time.Minute
 	vehicleDetectDuration = 10 * time.Minute
+
+	guardGracePeriod = 10 * time.Second // allow out of sync during this timespan
 )
 
 // elapsed is the time an expired timer will be set to
@@ -104,8 +106,6 @@ type LoadPoint struct {
 		ChargeMeterRef string `mapstructure:"charge"` // deprecated
 	}
 	SoC               SoCConfig
-	OnDisconnect_     interface{} `mapstructure:"onDisconnect"`
-	OnIdentify_       interface{} `mapstructure:"onIdentify"`
 	Enable, Disable   ThresholdConfig
 	ResetOnDisconnect bool `mapstructure:"resetOnDisconnect"`
 	onDisconnect      api.ActionConfig
@@ -169,14 +169,6 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 			lp.log.WARN.Printf("invalid poll mode: %s", lp.SoC.Poll.Mode)
 		}
 		lp.SoC.Poll.Mode = pollConnected
-	}
-
-	if lp.OnIdentify_ != nil {
-		lp.log.WARN.Printf("loadpoint.onIdentify is deprecated and will be removed in a future release. Use vehicle.onIdentify instead.")
-	}
-
-	if lp.OnDisconnect_ != nil {
-		lp.log.WARN.Printf("loadpoint.onDisconnect is deprecated and will be removed in a future release. Use loadpoint.resetOnDisconnect instead.")
 	}
 
 	// set vehicle polling interval
@@ -573,7 +565,9 @@ func (lp *LoadPoint) syncCharger() {
 	enabled, err := lp.charger.Enabled()
 	if err == nil {
 		if enabled != lp.enabled {
-			lp.log.WARN.Printf("charger out of sync: expected %vd, got %vd", status[lp.enabled], status[enabled])
+			if time.Since(lp.guardUpdated) > guardGracePeriod {
+				lp.log.WARN.Printf("charger out of sync: expected %vd, got %vd", status[lp.enabled], status[enabled])
+			}
 			err = lp.charger.Enable(lp.enabled)
 		}
 
@@ -617,7 +611,7 @@ func (lp *LoadPoint) setLimit(chargeCurrent float64, force bool) error {
 
 		// remote stop
 		// TODO https://github.com/evcc-io/evcc/discussions/1929
-		// if car, ok := lp.vehicle.(api.VehicleStopCharge); !enabled && ok {
+		// if car, ok := lp.vehicle.(api.VehicleChargeController); !enabled && ok {
 		// 	// log but don't propagate
 		// 	if err := car.StopCharge(); err != nil {
 		// 		lp.log.ERROR.Printf("vehicle remote charge stop: %v", err)
@@ -645,7 +639,7 @@ func (lp *LoadPoint) setLimit(chargeCurrent float64, force bool) error {
 
 		// remote start
 		// TODO https://github.com/evcc-io/evcc/discussions/1929
-		// if car, ok := lp.vehicle.(api.VehicleStartCharge); enabled && ok {
+		// if car, ok := lp.vehicle.(api.VehicleChargeController); enabled && ok {
 		// 	// log but don't propagate
 		// 	if err := car.StartCharge(); err != nil {
 		// 		lp.log.ERROR.Printf("vehicle remote charge start: %v", err)
@@ -1409,8 +1403,7 @@ func (lp *LoadPoint) Update(sitePower float64, cheap bool, batteryBuffered bool)
 	mode := lp.GetMode()
 	lp.publish("mode", mode)
 
-	// read and publish meters first
-	lp.UpdateChargePower()
+	// read and publish meters first- charge power has already been updated by the site
 	lp.updateChargeCurrents()
 
 	// update ChargeRater here to make sure initial meter update is caught

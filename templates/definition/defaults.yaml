@@ -130,8 +130,8 @@ params:
     de: Zeitüberschreitung
     en: Timeout
   help:
-    de: Akzeptiere keine Daten die älter als dieser Wert ist
-    en: Don't accept values older than this value in seconds
+    de: Akzeptiere keine Daten die älter als dieser Wert sind
+    en: Don't accept values older than this value
   example: 30s
   valuetype: duration
 - name: mode
@@ -180,7 +180,7 @@ params:
   valuetype: number
 - name: identifiers
   description:
-    de: Identifikationsnummer
+    de: Identifikation
     en: Identification
   help:
     de: "Kann meist erst später eingetragen werden, siehe: https://docs.evcc.io/docs/guides/vehicles/#erkennung-des-fahrzeugs-an-der-wallbox"
@@ -288,7 +288,7 @@ presets:
       {{define "vehicle-language"}}
       language: {{ .language }}
       {{end}}
-      
+
   vehiclecloud:
     params:
     - name: cloud

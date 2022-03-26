@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/server"
 	"github.com/evcc-io/evcc/util"
+	"github.com/evcc-io/evcc/util/request"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -17,7 +20,11 @@ var vehicleCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(vehicleCmd)
-	vehicleCmd.PersistentFlags().StringP("name", "n", "", "select vehicle by name")
+	vehicleCmd.PersistentFlags().StringP(flagName, "n", "", fmt.Sprintf(flagNameDescription, "vehicle"))
+	vehicleCmd.PersistentFlags().BoolP(flagStart, "a", false, flagStartDescription)
+	vehicleCmd.PersistentFlags().BoolP(flagStop, "o", false, flagStopDescription)
+	vehicleCmd.PersistentFlags().BoolP(flagWakeup, "w", false, flagWakeupDescription)
+	vehicleCmd.PersistentFlags().Bool(flagHeaders, false, flagHeadersDescription)
 }
 
 func runVehicle(cmd *cobra.Command, args []string) {
@@ -35,14 +42,14 @@ func runVehicle(cmd *cobra.Command, args []string) {
 		log.FATAL.Fatal(err)
 	}
 
-	// select single charger
-	if name := cmd.PersistentFlags().Lookup("name").Value.String(); name != "" {
-		for _, cfg := range conf.Vehicles {
-			if cfg.Name == name {
-				conf.Vehicles = []qualifiedConfig{cfg}
-				break
-			}
-		}
+	// full http request log
+	if cmd.PersistentFlags().Lookup(flagHeaders).Changed {
+		request.LogHeaders = true
+	}
+
+	// select single vehicle
+	if err := selectByName(cmd, &conf.Vehicles); err != nil {
+		log.FATAL.Fatal(err)
 	}
 
 	if err := cp.configureVehicles(conf); err != nil {
@@ -57,7 +64,48 @@ func runVehicle(cmd *cobra.Command, args []string) {
 
 	d := dumper{len: len(vehicles)}
 
-	for name, v := range vehicles {
-		d.DumpWithHeader(name, v)
+	var flagUsed bool
+	for _, v := range vehicles {
+		if cmd.PersistentFlags().Lookup(flagWakeup).Changed {
+			flagUsed = true
+
+			if vv, ok := v.(api.AlarmClock); ok {
+				if err := vv.WakeUp(); err != nil {
+					log.ERROR.Println("wakeup:", err)
+				}
+			} else {
+				log.ERROR.Println("wakeup: not implemented")
+			}
+		}
+
+		if cmd.PersistentFlags().Lookup(flagStart).Changed {
+			flagUsed = true
+
+			if vv, ok := v.(api.VehicleChargeController); ok {
+				if err := vv.StartCharge(); err != nil {
+					log.ERROR.Println("start charge:", err)
+				}
+			} else {
+				log.ERROR.Println("start charge: not implemented")
+			}
+		}
+
+		if cmd.PersistentFlags().Lookup(flagStop).Changed {
+			flagUsed = true
+
+			if vv, ok := v.(api.VehicleChargeController); ok {
+				if err := vv.StopCharge(); err != nil {
+					log.ERROR.Println("stop charge:", err)
+				}
+			} else {
+				log.ERROR.Println("stop charge: not implemented")
+			}
+		}
+	}
+
+	if !flagUsed {
+		for name, v := range vehicles {
+			d.DumpWithHeader(name, v)
+		}
 	}
 }
