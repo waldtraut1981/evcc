@@ -27,14 +27,14 @@ type API struct {
 	logger         *util.Logger
 }
 
-var apiInstances map[*Identity]*API = make(map[*Identity]*API)
+var apiInstances map[string]*API = make(map[string]*API)
 
-func GetApiFromMap(ident *Identity) *API {
-	return apiInstances[ident]
+func GetApiFromMap(user string) *API {
+	return apiInstances[user]
 }
 
-func AddApiToMap(ident *Identity, api *API) {
-	apiInstances[ident] = api
+func AddApiToMap(user string, api *API) {
+	apiInstances[user] = api
 }
 
 // NewAPI creates a new api client

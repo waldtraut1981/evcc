@@ -9,6 +9,16 @@ import (
 	"github.com/evcc-io/evcc/vehicle/vag/vwidentity"
 )
 
+var tokenSourceInstances map[string]vag.TokenSource = make(map[string]vag.TokenSource)
+
+func GetMbbTokenSourceFromMap(user string) (vag.TokenSource, error) {
+	return tokenSourceInstances[user], nil
+}
+
+func AddMbbTokenSourceToMap(user string, api vag.TokenSource) {
+	tokenSourceInstances[user] = api
+}
+
 // MbbTokenSource creates a refreshing token source for use with the MBB api.
 // Once the MBB token expires, it is recreated from the token exchanger (either TokenRefreshService or IDK)
 func MbbTokenSource(log *util.Logger, tox vag.TokenExchanger, clientID string, q url.Values, user, password string) (vag.TokenSource, error) {

@@ -9,6 +9,8 @@ import (
 	"github.com/evcc-io/evcc/api"
 	"github.com/evcc-io/evcc/util"
 	"github.com/evcc-io/evcc/util/request"
+	"github.com/evcc-io/evcc/vehicle/vag/service"
+	"github.com/evcc-io/evcc/vehicle/vag/tokenrefreshservice"
 	"github.com/evcc-io/evcc/vehicle/vw"
 	"github.com/thoas/go-funk"
 )
@@ -58,49 +60,35 @@ func NewVirtualVwFromConfig(other map[string]interface{}) (api.Charger, error) {
 
 	log := util.NewLogger("vw_virtual_charger").Redact(cc.User, cc.Password, cc.VIN)
 
-	identity := vw.GetIdentityFromMap(cc.User)
+	/////
+	trs := tokenrefreshservice.New(log, vw.TRSParams)
+	ts, err := service.GetMbbTokenSourceFromMap(cc.User)
 
-	var err error
-
-	if identity == nil {
-		log.DEBUG.Println("no identity present for username. Creating new one.")
-
-		identity = vw.NewIdentity(log, vw.AuthClientID, vw.AuthParams, cc.User, cc.Password)
-		err := identity.Login()
+	if ts == nil && err == nil {
+		ts, err = service.MbbTokenSource(log, trs, vw.AuthClientID, vw.AuthParams, cc.User, cc.Password)
 		if err != nil {
-			return nil, fmt.Errorf("login failed: %w", err)
+			return nil, err
+		} else {
+			service.AddMbbTokenSourceToMap(cc.User, ts)
 		}
-	} else {
-		log.DEBUG.Println("Reusing identity for username.")
 	}
 
-	api := vw.GetApiFromMap(identity)
+	api := vw.GetApiFromMap(cc.User)
 
 	if api == nil {
-		log.DEBUG.Println("no API present for identity. Creating new one.")
-
-		api = vw.NewAPI(log, identity, vw.Brand, vw.Country)
+		api = vw.NewAPI(log, ts, vw.Brand, vw.Country)
 		api.Client.Timeout = cc.Timeout
-
-		vw.AddApiToMap(identity, api)
-	} else {
-		log.DEBUG.Println("Reusing API for identity.")
+		vw.AddApiToMap(cc.User, api)
 	}
 
 	cc.VIN, err = ensureVehicle(cc.VIN, api.Vehicles)
 
 	provider := vw.GetProviderFromMap(cc.VIN)
 
-	if provider == nil {
-		log.DEBUG.Println("no provider for VIN. Creating new one.")
-
-		if err == nil {
-			if err = api.HomeRegion(cc.VIN); err == nil {
-				provider = vw.NewProvider(api, cc.VIN, cc.Cache)
-			}
+	if err == nil {
+		if err = api.HomeRegion(cc.VIN); err == nil {
+			provider = vw.NewProvider(api, cc.VIN, cc.Cache)
 		}
-	} else {
-		log.DEBUG.Println("Reusing provider for VIN.")
 	}
 
 	return NewVwVirtual(provider, log, cc.Latitude, cc.Longitude)
