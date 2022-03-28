@@ -17,8 +17,25 @@ import (
 	"github.com/evcc-io/evcc/util/transport"
 )
 
+/*
+Example config:
+meters:
+- name: bosch_grid
+  type: bosch-bpts5-hybrid
+  uri: http://192.168.178.22
+  usage: grid
+- name: bosch_pv
+  type: bosch-bpts5-hybrid
+  uri: http://192.168.178.22
+  usage: pv
+- name: bosch_battery
+  type: bosch-bpts5-hybrid
+  uri: http://192.168.178.22
+  usage: battery
+*/
+
 // Bosch is the Bosch BPT-S 5 Hybrid meter
-type BoschApiClient struct {
+type BoschBpts5HybridApiClient struct {
 	*request.Helper
 	uri, wuSid             string
 	currentBatterySocValue float64
@@ -30,24 +47,24 @@ type BoschApiClient struct {
 	logger                 *util.Logger
 }
 
-type Bosch struct {
+type BoschBpts5Hybrid struct {
 	usage                   string
 	currentErr              error
 	currentTotalEnergyValue float64
-	requestClient           *BoschApiClient
+	requestClient           *BoschBpts5HybridApiClient
 	logger                  *util.Logger
 }
 
-var boschInstance *BoschApiClient = nil
+var boschInstance *BoschBpts5HybridApiClient = nil
 
 func init() {
-	registry.Add("bosch", NewBoschFromConfig)
+	registry.Add("bosch-bpts5-hybrid", NewBoschBpts5HybridFromConfig)
 }
 
-//go:generate go run ../cmd/tools/decorate.go -f decorateBosch -b api.Meter -t "api.MeterEnergy,TotalEnergy,func() (float64, error)" -t "api.Battery,SoC,func() (float64, error)"
+//go:generate go run ../cmd/tools/decorate.go -f decorateBoschBpts5Hybrid -b api.Meter -t "api.MeterEnergy,TotalEnergy,func() (float64, error)" -t "api.Battery,SoC,func() (float64, error)"
 
-// NewBoschFromConfig creates a Bosch BPT-S 5 Hybrid Meter from generic config
-func NewBoschFromConfig(other map[string]interface{}) (api.Meter, error) {
+// NewBoschBpts5HybridFromConfig creates a Bosch BPT-S 5 Hybrid Meter from generic config
+func NewBoschBpts5HybridFromConfig(other map[string]interface{}) (api.Meter, error) {
 	cc := struct {
 		URI, Usage string
 	}{}
@@ -65,15 +82,15 @@ func NewBoschFromConfig(other map[string]interface{}) (api.Meter, error) {
 		return nil, fmt.Errorf("%s is invalid: %s", cc.URI, err)
 	}
 
-	return NewBosch(cc.URI, cc.Usage)
+	return NewBoschBpts5Hybrid(cc.URI, cc.Usage)
 }
 
-// NewBosch creates a Bosch Meter
-func NewBosch(uri, usage string) (api.Meter, error) {
-	log := util.NewLogger("bosch")
+// NewBoschBpts5Hybrid creates a Bosch BPT-S 5 Hybrid Meter
+func NewBoschBpts5Hybrid(uri, usage string) (api.Meter, error) {
+	log := util.NewLogger("bosch-bpts5-hybrid")
 
 	if boschInstance == nil {
-		boschInstance = &BoschApiClient{
+		boschInstance = &BoschBpts5HybridApiClient{
 			Helper:                 request.NewHelper(log),
 			uri:                    util.DefaultScheme(strings.TrimSuffix(uri, "/"), "http"),
 			currentBatterySocValue: 0.0,
@@ -97,7 +114,7 @@ func NewBosch(uri, usage string) (api.Meter, error) {
 		go readLoop(boschInstance)
 	}
 
-	m := &Bosch{
+	m := &BoschBpts5Hybrid{
 		usage:                   strings.ToLower(usage),
 		currentErr:              nil,
 		currentTotalEnergyValue: 0.0,
@@ -117,11 +134,11 @@ func NewBosch(uri, usage string) (api.Meter, error) {
 		batterySoC = m.batterySoC
 	}
 
-	return decorateBosch(m, totalEnergy, batterySoC), nil
+	return decorateBoschBpts5Hybrid(m, totalEnergy, batterySoC), nil
 }
 
 // Login calls login and saves the returned cookie
-func (m *BoschApiClient) Login() error {
+func (m *BoschBpts5HybridApiClient) Login() error {
 	resp, err := m.Client.Get(m.uri)
 
 	if err != nil {
@@ -154,7 +171,7 @@ func (m *BoschApiClient) Login() error {
 	return nil
 }
 
-func readLoop(m *BoschApiClient) {
+func readLoop(m *BoschBpts5HybridApiClient) {
 	for {
 		loopError := executeRead(m)
 
@@ -167,7 +184,7 @@ func readLoop(m *BoschApiClient) {
 	}
 }
 
-func executeRead(m *BoschApiClient) error {
+func executeRead(m *BoschBpts5HybridApiClient) error {
 	var postMessge = []byte(`action=get.hyb.overview&flow=1`)
 	resp, err := m.Client.Post(m.uri+"/cgi-bin/ipcclient.fcgi?"+m.wuSid, "text/plain", bytes.NewBuffer(postMessge))
 
@@ -208,7 +225,7 @@ func parseWattValue(inputString string) (float64, error) {
 	return resultFloat * 1000.0, err
 }
 
-func extractValues(m *BoschApiClient, body string) error {
+func extractValues(m *BoschBpts5HybridApiClient, body string) error {
 	if strings.Contains(body, "session invalid") {
 		m.logger.DEBUG.Println("extractValues: Session invalid. Performing Re-login")
 		m.Login()
@@ -260,7 +277,7 @@ func extractValues(m *BoschApiClient, body string) error {
 	return err
 }
 
-func extractWuiSidFromBody(m *BoschApiClient, body string) error {
+func extractWuiSidFromBody(m *BoschBpts5HybridApiClient, body string) error {
 	index := strings.Index(body, "WUI_SID=")
 
 	if index < 0 {
@@ -277,7 +294,7 @@ func extractWuiSidFromBody(m *BoschApiClient, body string) error {
 }
 
 // CurrentPower implements the api.Meter interface
-func (m *Bosch) CurrentPower() (float64, error) {
+func (m *BoschBpts5Hybrid) CurrentPower() (float64, error) {
 	if m.usage == "grid" {
 		if m.requestClient.einspeisung > 0.0 {
 			return -1.0 * m.requestClient.einspeisung, nil
@@ -299,11 +316,11 @@ func (m *Bosch) CurrentPower() (float64, error) {
 }
 
 // totalEnergy implements the api.MeterEnergy interface
-func (m *Bosch) totalEnergy() (float64, error) {
+func (m *BoschBpts5Hybrid) totalEnergy() (float64, error) {
 	return m.currentTotalEnergyValue, nil
 }
 
 // batterySoC implements the api.Battery interface
-func (m *Bosch) batterySoC() (float64, error) {
+func (m *BoschBpts5Hybrid) batterySoC() (float64, error) {
 	return m.requestClient.currentBatterySocValue, nil
 }
