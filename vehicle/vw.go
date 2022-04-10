@@ -47,15 +47,28 @@ func NewVWFromConfig(other map[string]interface{}) (api.Vehicle, error) {
 	log := util.NewLogger("vw").Redact(cc.User, cc.Password, cc.VIN)
 
 	trs := tokenrefreshservice.New(log, vw.TRSParams)
-	ts, err := service.MbbTokenSource(log, trs, vw.AuthClientID, vw.AuthParams, cc.User, cc.Password)
-	if err != nil {
-		return nil, err
+	ts, err := service.GetMbbTokenSourceFromMap(cc.User)
+
+	if ts == nil && err == nil {
+		ts, err = service.MbbTokenSource(log, trs, vw.AuthClientID, vw.AuthParams, cc.User, cc.Password)
+		if err != nil {
+			return nil, err
+		} else {
+			service.AddMbbTokenSourceToMap(cc.User, ts)
+		}
 	}
 
-	api := vw.NewAPI(log, ts, vw.Brand, vw.Country)
-	api.Client.Timeout = cc.Timeout
+	api := vw.GetApiFromMap(cc.User)
+
+	if api == nil {
+		api = vw.NewAPI(log, ts, vw.Brand, vw.Country)
+		api.Client.Timeout = cc.Timeout
+		vw.AddApiToMap(cc.User, api)
+	}
 
 	cc.VIN, err = ensureVehicle(cc.VIN, api.Vehicles)
+
+	v.Provider = vw.GetProviderFromMap(cc.VIN)
 
 	if err == nil {
 		if err = api.HomeRegion(cc.VIN); err == nil {
