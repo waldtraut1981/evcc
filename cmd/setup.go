@@ -85,8 +85,8 @@ func configureDatabase(conf server.InfluxConfig, loadPoints []loadpoint.API, in 
 
 	// reduce number of values written to influx
 	// TODO this breaks writing vehicleRange as its re-writting in short interval
-	// limiter := pipe.NewLimiter(5 * time.Second)
-	// in = limiter.Pipe(in)
+	limiter := pipe.NewLimiter(5 * time.Second)
+	in = limiter.Pipe(in)
 
 	go influx.Run(loadPoints, in)
 }
