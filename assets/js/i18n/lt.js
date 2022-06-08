@@ -32,7 +32,7 @@ export default {
       modalSavingsTotal: "Sutaupyta, palyginus su tinklu",
       modalExplaination: "Skaičiavimas",
       modalExplainationGrid: "kaina iš tinklo {gridPrice}",
-      modalExplainationFeedIn: "Kompensavimas už patiektą į tinklą energiją {feedInPrice}",
+      modalExplainationFeedIn: "kompensavimas už patiektą į tinklą energiją {feedInPrice}",
       modalServerStart: "nuo EVCC starto {since}.",
       modalNoData: "įkrovimo duomenų dar nėra",
     },
@@ -102,7 +102,7 @@ export default {
       minCharge: "minimalus įkrovimas iki {soc}%.",
       waitForVehicle: "Įkrovimas leidžiamas. Laukiama automobilio signalo.",
       charging: "Įkraunama.",
-      targetChargePlanned: "Suplanuotas įkrovimas, prasidės {start}.",
+      targetChargePlanned: "Suplanuotas įkrovimas, prasidės {time}.",
       targetChargeWaitForVehicle: "Suplanuotas įkrovimas leidžiamas. Laukiama automobilio signalo.",
       targetChargeActive: "Suplanuotas įkrovimas aktyvuotas.",
       connected: "Prijungtas.",
@@ -135,5 +135,9 @@ export default {
         Apie netikėtą elgesį praneškite mūsų
       `,
     },
+  },
+  offline: {
+    message: "Nėra ryšio su serveriu.",
+    reload: "Perkrauti?",
   },
 };

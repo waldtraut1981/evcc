@@ -96,15 +96,12 @@ type LoadPoint struct {
 	sync.Mutex                // guard status
 	Mode       api.ChargeMode `mapstructure:"mode"` // Charge mode, guarded by mutex
 
-	Title       string   `mapstructure:"title"`    // UI title
-	Phases      int      `mapstructure:"phases"`   // Charger enabled phases
-	ChargerRef  string   `mapstructure:"charger"`  // Charger reference
-	VehicleRef  string   `mapstructure:"vehicle"`  // Vehicle reference
-	VehiclesRef []string `mapstructure:"vehicles"` // Vehicles reference
-	MeterRef    string   `mapstructure:"meter"`    // Charge meter reference
-	Meters      struct {
-		ChargeMeterRef string `mapstructure:"charge"` // deprecated
-	}
+	Title             string   `mapstructure:"title"`    // UI title
+	Phases            int      `mapstructure:"phases"`   // Charger enabled phases
+	ChargerRef        string   `mapstructure:"charger"`  // Charger reference
+	VehicleRef        string   `mapstructure:"vehicle"`  // Vehicle reference
+	VehiclesRef       []string `mapstructure:"vehicles"` // Vehicles reference
+	MeterRef          string   `mapstructure:"meter"`    // Charge meter reference
 	SoC               SoCConfig
 	Enable, Disable   ThresholdConfig
 	ResetOnDisconnect bool `mapstructure:"resetOnDisconnect"`
@@ -193,16 +190,6 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 
 	if lp.MeterRef != "" {
 		lp.chargeMeter = cp.Meter(lp.MeterRef)
-	}
-
-	// deprecated
-	if lp.Meters.ChargeMeterRef != "" {
-		lp.log.WARN.Println("meters: charge: is deprecated. Use meter: instead")
-		if lp.chargeMeter == nil {
-			lp.chargeMeter = cp.Meter(lp.Meters.ChargeMeterRef)
-		} else {
-			lp.log.ERROR.Println("must not have meter: and meters: charge: both")
-		}
 	}
 
 	// multiple vehicles
@@ -474,8 +461,8 @@ func (lp *LoadPoint) evChargeCurrentHandler(current float64) {
 func (lp *LoadPoint) evChargeCurrentWrappedMeterHandler(current float64) {
 	power := current * float64(lp.activePhases()) * Voltage
 
-	if !lp.enabled || lp.GetStatus() != api.StatusC {
-		// if disabled we cannot be charging
+	// if disabled we cannot be charging
+	if !lp.enabled || !lp.charging() {
 		power = 0
 	}
 
@@ -573,7 +560,7 @@ func (lp *LoadPoint) syncCharger() {
 			err = lp.charger.Enable(lp.enabled)
 		}
 
-		if !enabled && lp.GetStatus() == api.StatusC {
+		if !enabled && lp.charging() {
 			lp.log.WARN.Println("charger logic error: disabled but charging")
 		}
 	}
@@ -809,11 +796,14 @@ func (lp *LoadPoint) setActiveVehicle(vehicle api.Vehicle) {
 		lp.publish("vehicleCapacity", lp.vehicle.Capacity())
 
 		// publish odometer once
-		var odo float64
 		if vs, ok := lp.vehicle.(api.VehicleOdometer); ok {
-			odo, _ = vs.Odometer()
+			if odo, err := vs.Odometer(); err == nil {
+				lp.log.DEBUG.Printf("vehicle odometer: %.0fkm", odo)
+				lp.publish("vehicleOdometer", odo)
+			} else {
+				lp.log.ERROR.Printf("vehicle odometer: %v", err)
+			}
 		}
-		lp.publish("vehicleOdometer", odo)
 
 		lp.applyAction(vehicle.OnIdentified())
 
@@ -944,7 +934,7 @@ func (lp *LoadPoint) updateChargerStatus() error {
 
 // effectiveCurrent returns the currently effective charging current
 func (lp *LoadPoint) effectiveCurrent() float64 {
-	if lp.GetStatus() != api.StatusC {
+	if !lp.charging() {
 		return 0
 	}
 

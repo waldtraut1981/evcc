@@ -103,7 +103,7 @@ export default {
       minCharge: "minimum charging to {soc}%.",
       waitForVehicle: "Ready. Waiting for vehicle.",
       charging: "Charging.",
-      targetChargePlanned: "Target charge planned. Starting {start}.",
+      targetChargePlanned: "Target charge planned. Starting {time}.",
       targetChargeWaitForVehicle: "Target charge ready. Wait for vehicle.",
       targetChargeActive: "Target charge active.",
       connected: "Connected.",
@@ -136,5 +136,9 @@ export default {
         Please report unexpected behaviour in our
       `,
     },
+  },
+  offline: {
+    message: "No connection to server.",
+    reload: "Reload?",
   },
 };

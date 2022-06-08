@@ -11,7 +11,7 @@ func init() {
 	registry.Add("tasmota", NewTasmotaFromConfig)
 }
 
-// NewTapoFromConfig creates a tapo meter from generic config
+// NewTasmotaFromConfig creates a Tasmota meter from generic config
 func NewTasmotaFromConfig(other map[string]interface{}) (api.Meter, error) {
 	cc := struct {
 		URI      string

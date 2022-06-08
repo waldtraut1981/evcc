@@ -17,7 +17,7 @@ type Connection struct {
 	uri, user, password string
 }
 
-// NewConnection creates Tasmota charger
+// NewConnection creates a Tasmota connection
 func NewConnection(uri, user, password string) (*Connection, error) {
 	if uri == "" {
 		return nil, errors.New("missing uri")
@@ -36,7 +36,7 @@ func NewConnection(uri, user, password string) (*Connection, error) {
 	return c, nil
 }
 
-// ExecCmd executes a Tasmota api command and provides the response
+// ExecCmd executes an api command and provides the response
 func (d *Connection) ExecCmd(cmd string, res interface{}) error {
 	parameters := url.Values{
 		"user":     []string{d.user},
