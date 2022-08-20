@@ -1,14 +1,13 @@
 <template>
-	<div class="d-block text-gray-light">{{ message }}&nbsp;</div>
+	<div class="d-block evcc-gray">{{ message }}&nbsp;</div>
 </template>
 
 <script>
-import collector from "../mixins/collector";
 import formatter from "../mixins/formatter";
 
 export default {
 	name: "VehicleStatus",
-	mixins: [collector, formatter],
+	mixins: [formatter],
 	props: {
 		vehicleSoC: Number,
 		minSoC: Number,

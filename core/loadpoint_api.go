@@ -102,20 +102,28 @@ func (lp *LoadPoint) SetMinSoC(soc int) {
 func (lp *LoadPoint) GetPhases() int {
 	lp.Lock()
 	defer lp.Unlock()
-	return lp.Phases
+	return lp.phases
 }
 
 // SetPhases sets loadpoint enabled phases
 func (lp *LoadPoint) SetPhases(phases int) error {
-	if phases != 1 && phases != 3 {
+	// limit auto mode (phases=0) to scalable charger
+	if _, ok := lp.charger.(api.PhaseSwitcher); !ok && phases == 0 {
 		return fmt.Errorf("invalid number of phases: %d", phases)
 	}
 
-	if _, ok := lp.charger.(api.ChargePhases); ok {
-		return lp.scalePhases(phases)
+	if phases != 0 && phases != 1 && phases != 3 {
+		return fmt.Errorf("invalid number of phases: %d", phases)
 	}
 
-	lp.setPhases(phases)
+	// set new default
+	lp.setConfiguredPhases(phases)
+
+	// apply immediately if not 1p3p
+	if _, ok := lp.charger.(api.PhaseSwitcher); !ok {
+		lp.setPhases(phases)
+	}
+
 	return nil
 }
 
@@ -136,14 +144,6 @@ func (lp *LoadPoint) SetTargetCharge(finishAt time.Time, soc int) {
 			lp.requestUpdate()
 		}
 	}
-}
-
-// SetVehicle sets the active vehicle
-func (lp *LoadPoint) SetVehicle(vehicle api.Vehicle) {
-	lp.Lock()
-	defer lp.Unlock()
-
-	lp.setActiveVehicle(vehicle)
 }
 
 // RemoteControl sets remote status demand
@@ -204,7 +204,7 @@ func (lp *LoadPoint) GetMaxCurrent() float64 {
 	return lp.MaxCurrent
 }
 
-// SetMaxCurrent returns the max loadpoint current
+// SetMaxCurrent sets the max loadpoint current
 func (lp *LoadPoint) SetMaxCurrent(current float64) {
 	lp.Lock()
 	defer lp.Unlock()
@@ -229,9 +229,6 @@ func (lp *LoadPoint) GetMaxPower() float64 {
 
 // setRemainingDuration sets the estimated remaining charging duration
 func (lp *LoadPoint) setRemainingDuration(chargeRemainingDuration time.Duration) {
-	lp.Lock()
-	defer lp.Unlock()
-
 	if lp.chargeRemainingDuration != chargeRemainingDuration {
 		lp.chargeRemainingDuration = chargeRemainingDuration
 		lp.publish("chargeRemainingDuration", chargeRemainingDuration)
@@ -261,4 +258,31 @@ func (lp *LoadPoint) GetRemainingEnergy() float64 {
 	lp.Lock()
 	defer lp.Unlock()
 	return lp.chargeRemainingEnergy
+}
+
+// SetVehicle sets the active vehicle
+func (lp *LoadPoint) SetVehicle(vehicle api.Vehicle) {
+	// TODO develop universal locking approach
+	// setActiveVehicle is protected by lock, hence no locking here
+
+	// set desired vehicle
+	lp.setActiveVehicle(vehicle)
+
+	lp.Lock()
+	defer lp.Unlock()
+
+	// disable auto-detect
+	lp.stopVehicleDetection()
+}
+
+// StartVehicleDetection allows triggering vehicle detection for debugging purposes
+func (lp *LoadPoint) StartVehicleDetection() {
+	// reset vehicle
+	lp.setActiveVehicle(nil)
+
+	lp.Lock()
+	defer lp.Unlock()
+
+	// start auto-detect
+	lp.startVehicleDetection()
 }

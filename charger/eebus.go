@@ -42,10 +42,10 @@ func init() {
 
 // NewEEBusFromConfig creates an EEBus charger from generic config
 func NewEEBusFromConfig(other map[string]interface{}) (api.Charger, error) {
-	cc := struct {
+	var cc struct {
 		Ski           string
 		ForcePVLimits bool
-	}{}
+	}
 
 	if err := util.DecodeOther(other, &cc); err != nil {
 		return nil, err
@@ -156,7 +156,6 @@ func (c *EEBus) showCurrentChargingSetup() {
 		timestamp := time.Now()
 		c.log.WARN.Println("!! ", timestamp.Format("2006-01-02 15:04:05"), " ev-charger-self-consumption-support support changed from ", prevSelfConsumptionSupport, " to ", data.EVData.UCSelfConsumptionAvailable)
 	}
-
 }
 
 func (c *EEBus) dataUpdateHandler(dataType communication.EVDataElementUpdateType, data *communication.EVSEClientDataType) {
@@ -248,9 +247,6 @@ func (c *EEBus) Enabled() (bool, error) {
 }
 
 // Enable implements the api.Charger interface
-// enable
-//	true: allow to EV to draw power
-//  false: do not allow the EV to draw power
 func (c *EEBus) Enable(enable bool) error {
 	data, err := c.cc.GetData()
 	if err != nil {
